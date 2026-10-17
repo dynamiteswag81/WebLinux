@@ -91,6 +91,8 @@ $('cons').addEventListener('submit', (e) => {
   machine.consoleInput(v + '\n');
 });
 $('btn-log').addEventListener('click', () => $('bootlog').classList.toggle('hidden'));
+screen.attachTextInput($('kbd'));
+$('btn-kbd').addEventListener('click', () => $('kbd').focus());
 $('btn-full').addEventListener('click', () => {
   document.documentElement.requestFullscreen?.().then(() => $('screen').focus(), () => {});
 });

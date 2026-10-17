@@ -27,3 +27,8 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
 #bar button { background: transparent; color: var(--fg); border: 1px solid var(--line);
   border-radius: 4px; padding: 2px 10px; font: inherit; cursor: pointer; }
 #bar button:hover { border-color: var(--accent); }
+/* focus target that brings up on-screen keyboards; kept out of sight */
+#kbd { position: fixed; left: 0; bottom: 0; width: 1px; height: 1px; opacity: 0;
+  border: 0; padding: 0; resize: none; }
+#btn-kbd { display: none; }
+@media (pointer: coarse) { #btn-kbd { display: inline-block; } }

@@ -56,6 +56,28 @@ export class Screen {
 
   _send(evs) { this.m.inputEvents(evs); }
 
+  // A text field that on-screen keyboards type into; forward what arrives.
+  attachTextInput(ta) {
+    const press = (code) => this._send([[0, K.EV_KEY, code, 1], [0, K.EV_KEY, code, 0], [0, K.EV_SYN, 0, 0]]);
+    ta.addEventListener('beforeinput', (e) => {
+      e.preventDefault();
+      switch (e.inputType) {
+        case 'insertText': case 'insertReplacementText': case 'insertFromPaste':
+          if (e.data) this.typeText(e.data);
+          break;
+        case 'insertLineBreak': case 'insertParagraph': press(K.KEYCODES.Enter); break;
+        case 'deleteContentBackward': press(K.KEYCODES.Backspace); break;
+        case 'deleteContentForward': press(K.KEYCODES.Delete); break;
+      }
+    });
+    ta.addEventListener('keydown', (e) => {
+      // keys that produce no input events
+      const code = { ArrowUp: 1, ArrowDown: 1, ArrowLeft: 1, ArrowRight: 1, Escape: 1, Tab: 1 }[e.key]
+        ? K.KEYCODES[e.key === 'Escape' ? 'Escape' : e.key === 'Tab' ? 'Tab' : e.key] : undefined;
+      if (code) { e.preventDefault(); press(code); }
+    });
+  }
+
   // Type text as key presses, in chunks so the guest's queues keep up.
   typeText(text) {
     const keys = [];

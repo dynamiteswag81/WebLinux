@@ -117,6 +117,11 @@ try {
       await page.mouse.move(x, y, { steps: 4 });
       if (input.wheel) await page.mouse.wheel(0, input.wheel);
       else await page.mouse.click(x, y, { clickCount: input.double ? 2 : 1 });
+    } else if (input && input.field !== undefined) {
+      // type into the on-screen-keyboard text field (mobile path)
+      await page.focus('#kbd');
+      await page.keyboard.type(input.field, { delay: 20 });
+      await page.keyboard.press('Enter');
     } else if (input && input.press) {
       // key combinations on the canvas, e.g. "Control+c"
       await page.focus('#screen');

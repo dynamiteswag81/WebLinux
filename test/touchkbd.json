@@ -1,0 +1,1 @@
+[[null, "weblinux:/# "], [{"sleep": 5000}, ""], [{"field": "echo mobile-$((2*3)) > /tmp/m"}, ""], [{"sleep": 2000}, ""], ["cat /tmp/m", "mobile-6"]]

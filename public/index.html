@@ -9,6 +9,7 @@
 <body>
 <div id="app">
   <canvas id="screen" tabindex="0" aria-label="Linux desktop"></canvas>
+  <textarea id="kbd" aria-label="On-screen keyboard input" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false"></textarea>
   <div id="bootlog" aria-live="polite">
     <pre id="log"></pre>
     <form id="cons"><span>ttyW0&gt;</span><input id="consin" autocomplete="off" spellcheck="false" placeholder="type into the kernel console"></form>
@@ -16,6 +17,7 @@
   <div id="bar">
     <span id="status">starting…</span>
     <span class="spacer"></span>
+    <button id="btn-kbd" type="button" title="Show the on-screen keyboard">Keyboard</button>
     <button id="btn-full" type="button" title="Full screen">Full screen</button>
     <button id="btn-reset" type="button" title="Erase the saved disk and restart">Reset disk</button>
     <button id="btn-log" type="button" title="Show/hide the kernel console">Console</button>
