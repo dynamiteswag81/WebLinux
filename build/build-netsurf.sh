@@ -117,7 +117,7 @@ step_netsurf() {
 	make -C $NS/netsurf TARGET=framebuffer HOST=$NSHOST PREFIX=/usr Q= \
 		CC="$CC" BUILD_CC=cc AR=llvm-ar NSSHARED=$NS/buildsystem WARNFLAGS='-w' \
 		PATH="$O/host/bin:$PATH" \
-		NETSURF_FB_FRONTEND=linux NETSURF_USE_DUKTAPE=${NETSURF_JS:-NO} \
+		NETSURF_FB_FRONTEND=linux NETSURF_USE_DUKTAPE=${NETSURF_JS:-YES} \
 		NETSURF_USE_OPENSSL=NO NETSURF_USE_LIBICONV_PLUG=NO NETSURF_USE_WEBP=NO \
 		NETSURF_USE_JPEGXL=NO NETSURF_USE_ROSPRITE=NO NETSURF_USE_VIDEO=NO \
 		NETSURF_FB_RESPATH='$${HOME}/.netsurf/:/usr/share/netsurf' \
@@ -125,7 +125,7 @@ step_netsurf() {
 	rm -rf $O/install
 	make -C $NS/netsurf install TARGET=framebuffer HOST=$NSHOST PREFIX=/usr DESTDIR=$O/install \
 		Q= CC="$CC" BUILD_CC=cc NSSHARED=$NS/buildsystem NETSURF_FB_FRONTEND=linux \
-		NETSURF_USE_DUKTAPE=${NETSURF_JS:-NO} NETSURF_USE_OPENSSL=NO NETSURF_USE_LIBICONV_PLUG=NO \
+		NETSURF_USE_DUKTAPE=${NETSURF_JS:-YES} NETSURF_USE_OPENSSL=NO NETSURF_USE_LIBICONV_PLUG=NO \
 		NETSURF_USE_WEBP=NO NETSURF_USE_JPEGXL=NO NETSURF_USE_ROSPRITE=NO \
 		>> $O/netsurf.log 2>&1 || fail "netsurf install" $O/netsurf.log
 	llvm-strip --strip-debug -o $O/netsurf $NS/netsurf/nsfb

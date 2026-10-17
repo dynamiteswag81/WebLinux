@@ -2,3 +2,4 @@ ca_bundle:/etc/ssl/certs/ca-certificates.crt
 homepage_url:about:welcome
 fb_toolbar_layout:blfsrutc
 fb_font_monochrome:0
+enable_javascript:1
