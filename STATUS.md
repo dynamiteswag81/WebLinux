@@ -135,4 +135,4 @@ Notes from getting there:
 4. Lightweight desktop in C on fbdev and evdev: windows, taskbar, terminal (pty plus bash), file manager, editor.
 5. Persistence: ext2 on the block device, overlayfs over the initramfs, periodic commits plus `pagehide`.
 6. Networking: a JS TCP/IP NAT in a worker plus a WebSocket relay in `server.js`. Then build NetSurf's framebuffer frontend (needs curl, openssl or mbedtls, libpng, libjpeg, freetype).
-7. A start script (`start.bat`) and a README.
+7. A start script (`start.bat`). (README.md written 2026-10-17; keep its status list current.)
