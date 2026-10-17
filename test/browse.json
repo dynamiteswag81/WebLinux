@@ -1,0 +1,10 @@
+[
+ [null, "weblinux:/# "],
+ ["mkdir -p /root/.netsurf; sed 's|^homepage_url:.*|homepage_url:http://10.0.2.2:@PORT@/test/page.html|' /usr/share/netsurf/Choices > /root/.netsurf/Choices; echo DO$((0+1))NE", "DO1NE"],
+ [{"sleep": 2000}, ""],
+ [{"click": [40, 753]}, ""],
+ [{"sleep": 500}, ""],
+ [{"click": [60, 664]}, ""],
+ [{"sleep": 12000}, ""],
+ ["echo DO$((0+2))NE", "DO2NE"]
+]

@@ -60,7 +60,7 @@ try {
   for (const [input, expect] of steps) {
     if (input && input.kbd !== undefined) {
       await page.focus('#screen');
-      await page.keyboard.type(input.kbd, { delay: 5 });
+      await page.keyboard.type(input.kbd.replaceAll('@PORT@', String(PORT)), { delay: 5 });
       await page.keyboard.press('Enter');
     } else if (input && input.click) {
       // canvas pixel coordinates; the canvas is scaled to fit (object-fit)
