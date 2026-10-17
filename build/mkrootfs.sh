@@ -12,6 +12,7 @@ mkdir -p $R/bin $R/sbin $R/usr/bin $R/usr/sbin
 cp -r $W/rootfs/. $R/
 rm $R/manifest
 bash $W/build/wasm-cc -O2 -Wall $W/userland/init.c -o $R/sbin/init
+bash $W/build/wasm-cc -O2 -Wall $W/userland/play.c -o $R/usr/bin/play
 cp $W/build/obj/bash/bash $R/bin/bash
 cp $BB/busybox_unstripped $R/bin/busybox
 [ ! -f $W/build/obj/desktop/wldesk ] || cp $W/build/obj/desktop/wldesk $R/usr/bin/

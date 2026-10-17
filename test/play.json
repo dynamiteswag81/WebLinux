@@ -1,0 +1,1 @@
+[[null, "weblinux:/# "], ["time play -t 880 0.5; wget -q -O /tmp/b.wav http://10.0.2.2:@PORT@/test/beep.wav && play /tmp/b.wav; echo rc=$?", "rc=0"]]
