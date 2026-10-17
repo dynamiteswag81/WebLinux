@@ -599,6 +599,33 @@ struct files {
 
 static void open_editor(const char *path);
 static void open_files(const char *path);
+static void open_terminal(const char *cmd);
+static void browse(const char *url);
+
+static int has_ext(const char *name, const char *ext)
+{
+	size_t n = strlen(name), e = strlen(ext);
+	return n > e && !strcasecmp(name + n - e, ext);
+}
+
+/* open a file with the program for its type */
+static void open_path(const char *p)
+{
+	char cmd[PATH_MAX + 64];
+
+	if (has_ext(p, ".html") || has_ext(p, ".htm")) {
+		snprintf(cmd, sizeof(cmd), "file://%s", p);
+		browse(cmd);
+	} else if (has_ext(p, ".wav")) {
+		/* quoted for the shell: no single quotes in the name */
+		if (strchr(p, '\''))
+			return;
+		snprintf(cmd, sizeof(cmd), "play '%s'; sleep 1", p);
+		open_terminal(cmd);
+	} else {
+		open_editor(p);
+	}
+}
 
 static int entcmp(const void *a, const void *b)
 {
@@ -707,7 +734,7 @@ static void files_open(struct win *w)
 		snprintf(f->path, sizeof(f->path), "%s", p);
 		files_load(w);
 	} else {
-		open_editor(p);
+		open_path(p);
 	}
 }
 
