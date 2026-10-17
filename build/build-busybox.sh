@@ -34,4 +34,4 @@ fi
 
 eval $BBMAKE -j16 -k > make.log 2>&1
 grep -E 'error:' make.log | sed 's/:[0-9]*:[0-9]*:/:/' | sort | uniq -c | sort -rn | head -30
-ls -la busybox_unstripped busybox 2>/dev/null
+ls -la busybox_unstripped
