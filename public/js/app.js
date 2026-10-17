@@ -2,6 +2,7 @@
 
 import { Machine } from './machine.js';
 import { Screen } from './screen.js';
+import { Audio } from './audio.js';
 
 const $ = (id) => document.getElementById(id);
 const log = $('log');
@@ -17,6 +18,8 @@ const machine = new Machine({
 });
 self.machine = machine; // handy from devtools
 const screen = new Screen(machine, $('screen'));
+const audio = new Audio(machine);
+self.audio = audio;
 // once the frame buffer is up, the canvas is the main console
 $('screen').addEventListener('fbattach', () => {
   $('bootlog').classList.add('hidden');

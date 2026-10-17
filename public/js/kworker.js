@@ -105,6 +105,12 @@ const host = {
     // park this worker for good
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
   },
+  get_random(buf, len) {
+    // getRandomValues refuses views of shared memory: go through a copy
+    const t = new Uint8Array(len);
+    for (let o = 0; o < len; o += 65536) crypto.getRandomValues(t.subarray(o, Math.min(len, o + 65536)));
+    u8.set(t, buf);
+  },
   dev_register(name, addr) {
     post({ t: 'dev', name: cstr(name), addr });
   },

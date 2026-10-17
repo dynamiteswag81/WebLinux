@@ -1,0 +1,284 @@
+From 00cb9769f0981f23c1b6d40532a6fb231a210213 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 17 Oct 2026 18:25:07 +0000
+Subject: [PATCH 9/9] wasm: sound output (wasmsnd) through Web Audio
+
+ALSA card with one S16_LE playback PCM; the host's AudioWorklet reads the
+buffer from shared memory, advances hw_ptr and raises WASM_IRQ_SOUND at
+period boundaries.  defconfig: SND, PCM OSS emulation (/dev/dsp).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/wasm/configs/wasm_defconfig |   7 ++
+ arch/wasm/drivers/Kconfig        |   8 ++
+ arch/wasm/drivers/Makefile       |   1 +
+ arch/wasm/drivers/wasmsnd.c      | 192 +++++++++++++++++++++++++++++++
+ arch/wasm/include/asm/wasm.h     |   3 +
+ 5 files changed, 211 insertions(+)
+ create mode 100644 arch/wasm/drivers/wasmsnd.c
+
+diff --git a/arch/wasm/configs/wasm_defconfig b/arch/wasm/configs/wasm_defconfig
+index 3b9107065..f63068b70 100644
+--- a/arch/wasm/configs/wasm_defconfig
++++ b/arch/wasm/configs/wasm_defconfig
+@@ -54,6 +54,13 @@ CONFIG_INPUT_EVDEV=y
+ # CONFIG_INPUT_MOUSE is not set
+ # CONFIG_SERIO is not set
+ # CONFIG_LEGACY_PTYS is not set
++CONFIG_SOUND=y
++CONFIG_SND=y
++CONFIG_SND_OSSEMUL=y
++CONFIG_SND_PCM_OSS=y
++# CONFIG_SND_DRIVERS is not set
++# CONFIG_SND_SPI is not set
++# CONFIG_SND_X86 is not set
+ CONFIG_FB=y
+ CONFIG_FRAMEBUFFER_CONSOLE=y
+ CONFIG_FRAMEBUFFER_CONSOLE_DETECT_PRIMARY=y
+diff --git a/arch/wasm/drivers/Kconfig b/arch/wasm/drivers/Kconfig
+index 8d7c58a6c..e9b77676a 100644
+--- a/arch/wasm/drivers/Kconfig
++++ b/arch/wasm/drivers/Kconfig
+@@ -37,3 +37,11 @@ config WASM_NET
+ 	help
+ 	  Ethernet frames to the host page, which routes them (NAT) to the
+ 	  real network through the page server.
++
++config WASM_SND
++	bool "Sound output through Web Audio"
++	depends on SND
++	select SND_PCM
++	default y
++	help
++	  An ALSA playback device the host page plays with an AudioWorklet.
+diff --git a/arch/wasm/drivers/Makefile b/arch/wasm/drivers/Makefile
+index 9084c31e7..1f6e84de1 100644
+--- a/arch/wasm/drivers/Makefile
++++ b/arch/wasm/drivers/Makefile
+@@ -4,3 +4,4 @@ obj-$(CONFIG_WASM_FB) += wasmfb.o
+ obj-$(CONFIG_WASM_INPUT) += wasminput.o
+ obj-$(CONFIG_WASM_BLK) += wasmblk.o
+ obj-$(CONFIG_WASM_NET) += wasmnet.o
++obj-$(CONFIG_WASM_SND) += wasmsnd.o
+diff --git a/arch/wasm/drivers/wasmsnd.c b/arch/wasm/drivers/wasmsnd.c
+new file mode 100644
+index 000000000..750c14fb8
+--- /dev/null
++++ b/arch/wasm/drivers/wasmsnd.c
+@@ -0,0 +1,192 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Sound output on the host page (ALSA card "WebLinux", one playback PCM).
++ *
++ * The PCM buffer is ordinary kernel memory.  While the stream runs, the
++ * host's AudioWorklet reads samples straight out of it, advances 'hw_ptr'
++ * (bytes into the buffer) and raises WASM_IRQ_SOUND whenever it crosses a
++ * period boundary; the interrupt reports the elapsed period to ALSA.
++ * Without an audio output (no user gesture yet, or no Web Audio) the host
++ * still consumes the buffer in real time, silently, so players don't hang.
++ *
++ * Format: S16_LE, 1 or 2 channels, 8000..48000 Hz (the host resamples).
++ */
++
++#include <linux/init.h>
++#include <linux/interrupt.h>
++#include <linux/module.h>
++#include <linux/platform_device.h>
++#include <sound/core.h>
++#include <sound/initval.h>
++#include <sound/pcm.h>
++
++#include <asm/wasm.h>
++
++/* shared with the host; layout is ABI (public/js/audio.js) */
++struct wasm_snd_state {
++	u32 running;		/* kernel: stream started */
++	u32 buf;		/* kernel: buffer address */
++	u32 buf_bytes;		/* kernel */
++	u32 period_bytes;	/* kernel */
++	u32 rate;		/* kernel: frames per second */
++	u32 channels;		/* kernel */
++	u32 hw_ptr;		/* host: bytes consumed, mod buf_bytes */
++	u32 seq;		/* kernel: bumped on every start */
++};
++
++static struct wasm_snd_state wasm_snd;
++static struct snd_pcm_substream *wasm_snd_sub;
++static DEFINE_SPINLOCK(wasm_snd_lock);
++
++static const struct snd_pcm_hardware wasm_snd_hw = {
++	.info = SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_MMAP_VALID |
++		SNDRV_PCM_INFO_INTERLEAVED | SNDRV_PCM_INFO_BLOCK_TRANSFER,
++	.formats = SNDRV_PCM_FMTBIT_S16_LE,
++	.rates = SNDRV_PCM_RATE_CONTINUOUS | SNDRV_PCM_RATE_8000_48000,
++	.rate_min = 8000,
++	.rate_max = 48000,
++	.channels_min = 1,
++	.channels_max = 2,
++	.buffer_bytes_max = 256 * 1024,
++	.period_bytes_min = 256,
++	.period_bytes_max = 64 * 1024,
++	.periods_min = 2,
++	.periods_max = 64,
++};
++
++static int wasm_snd_open(struct snd_pcm_substream *ss)
++{
++	ss->runtime->hw = wasm_snd_hw;
++	return snd_pcm_hw_constraint_integer(ss->runtime,
++					     SNDRV_PCM_HW_PARAM_PERIODS);
++}
++
++static int wasm_snd_close(struct snd_pcm_substream *ss)
++{
++	return 0;
++}
++
++static int wasm_snd_prepare(struct snd_pcm_substream *ss)
++{
++	struct snd_pcm_runtime *rt = ss->runtime;
++
++	WRITE_ONCE(wasm_snd.running, 0);
++	wasm_snd.buf = (u32)(unsigned long)rt->dma_area;
++	wasm_snd.buf_bytes = snd_pcm_lib_buffer_bytes(ss);
++	wasm_snd.period_bytes = snd_pcm_lib_period_bytes(ss);
++	wasm_snd.rate = rt->rate;
++	wasm_snd.channels = rt->channels;
++	WRITE_ONCE(wasm_snd.hw_ptr, 0);
++	return 0;
++}
++
++static int wasm_snd_trigger(struct snd_pcm_substream *ss, int cmd)
++{
++	unsigned long flags;
++
++	spin_lock_irqsave(&wasm_snd_lock, flags);
++	switch (cmd) {
++	case SNDRV_PCM_TRIGGER_START:
++	case SNDRV_PCM_TRIGGER_RESUME:
++	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
++		wasm_snd_sub = ss;
++		wasm_snd.seq++;
++		__atomic_store_n(&wasm_snd.running, 1, __ATOMIC_RELEASE);
++		break;
++	case SNDRV_PCM_TRIGGER_STOP:
++	case SNDRV_PCM_TRIGGER_SUSPEND:
++	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
++		__atomic_store_n(&wasm_snd.running, 0, __ATOMIC_RELEASE);
++		wasm_snd_sub = NULL;
++		break;
++	default:
++		spin_unlock_irqrestore(&wasm_snd_lock, flags);
++		return -EINVAL;
++	}
++	spin_unlock_irqrestore(&wasm_snd_lock, flags);
++	wasm_notify(&wasm_snd.running);
++	return 0;
++}
++
++static snd_pcm_uframes_t wasm_snd_pointer(struct snd_pcm_substream *ss)
++{
++	u32 p = __atomic_load_n(&wasm_snd.hw_ptr, __ATOMIC_ACQUIRE);
++
++	return bytes_to_frames(ss->runtime, p % wasm_snd.buf_bytes);
++}
++
++static const struct snd_pcm_ops wasm_snd_ops = {
++	.open		= wasm_snd_open,
++	.close		= wasm_snd_close,
++	.prepare	= wasm_snd_prepare,
++	.trigger	= wasm_snd_trigger,
++	.pointer	= wasm_snd_pointer,
++};
++
++static irqreturn_t wasm_snd_irq(int irq, void *dev_id)
++{
++	struct snd_pcm_substream *ss;
++
++	spin_lock(&wasm_snd_lock);
++	ss = wasm_snd_sub;
++	spin_unlock(&wasm_snd_lock);
++	if (ss)
++		snd_pcm_period_elapsed(ss);
++	return IRQ_HANDLED;
++}
++
++static int wasm_snd_probe(struct platform_device *pdev)
++{
++	struct snd_card *card;
++	struct snd_pcm *pcm;
++	int ret;
++
++	ret = snd_devm_card_new(&pdev->dev, SNDRV_DEFAULT_IDX1,
++				SNDRV_DEFAULT_STR1, THIS_MODULE, 0, &card);
++	if (ret)
++		return ret;
++	strscpy(card->driver, "wasmsnd", sizeof(card->driver));
++	strscpy(card->shortname, "WebLinux", sizeof(card->shortname));
++	strscpy(card->longname, "WebLinux Web Audio output",
++		sizeof(card->longname));
++
++	ret = snd_pcm_new(card, "WebLinux PCM", 0, 1, 0, &pcm);
++	if (ret)
++		return ret;
++	strscpy(pcm->name, "Web Audio", sizeof(pcm->name));
++	snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_PLAYBACK, &wasm_snd_ops);
++	snd_pcm_set_managed_buffer_all(pcm, SNDRV_DMA_TYPE_CONTINUOUS, NULL,
++				       64 * 1024, 256 * 1024);
++
++	ret = devm_request_irq(&pdev->dev, WASM_IRQ_SOUND, wasm_snd_irq, 0,
++			       "wasmsnd", NULL);
++	if (ret)
++		return ret;
++	ret = snd_card_register(card);
++	if (ret)
++		return ret;
++	wasm_host_dev_register("snd", &wasm_snd);
++	return 0;
++}
++
++static struct platform_driver wasm_snd_driver = {
++	.probe	= wasm_snd_probe,
++	.driver	= { .name = "wasmsnd" },
++};
++
++static int __init wasm_snd_init(void)
++{
++	struct platform_device *pdev;
++	int ret;
++
++	ret = platform_driver_register(&wasm_snd_driver);
++	if (ret)
++		return ret;
++	pdev = platform_device_register_simple("wasmsnd", -1, NULL, 0);
++	if (IS_ERR(pdev)) {
++		platform_driver_unregister(&wasm_snd_driver);
++		return PTR_ERR(pdev);
++	}
++	return 0;
++}
++device_initcall(wasm_snd_init);
+diff --git a/arch/wasm/include/asm/wasm.h b/arch/wasm/include/asm/wasm.h
+index 685c50ac9..f8339be46 100644
+--- a/arch/wasm/include/asm/wasm.h
++++ b/arch/wasm/include/asm/wasm.h
+@@ -25,6 +25,7 @@
+ #define WASM_IRQ_BLOCK		3
+ #define WASM_IRQ_NET		4
+ #define WASM_IRQ_HOST		5
++#define WASM_IRQ_SOUND		6
+ #define WASM_NR_IRQS		8
+ 
+ struct task_struct;
+@@ -39,6 +40,8 @@ u64 wasm_host_now_ns(void) __wasm_import("now_ns");
+ u64 wasm_host_wall_ns(void) __wasm_import("wall_ns");
+ /* copy the boot command line into buf, returns its length */
+ int wasm_host_get_cmdline(char *buf, int size) __wasm_import("get_cmdline");
++/* fill buf with random bytes from the host's CSPRNG */
++void wasm_host_get_random(void *buf, unsigned int len) __wasm_import("get_random");
+ /* initial ramdisk */
+ unsigned long wasm_host_initrd_size(void) __wasm_import("initrd_size");
+ void wasm_host_initrd_load(void *dst) __wasm_import("initrd_load");
+-- 
+2.43.0
+

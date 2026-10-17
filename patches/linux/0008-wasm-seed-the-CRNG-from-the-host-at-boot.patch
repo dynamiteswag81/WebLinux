@@ -1,0 +1,43 @@
+From 94be86e9dc5ce9d4f38f5f2f57edef6fc8501606 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 17 Oct 2026 18:25:07 +0000
+Subject: [PATCH 8/9] wasm: seed the CRNG from the host at boot
+
+The host's crypto.getRandomValues() is the only entropy source; credit
+64 bytes of it as bootloader randomness so /dev/urandom is ready early.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/wasm/kernel/setup.c | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/arch/wasm/kernel/setup.c b/arch/wasm/kernel/setup.c
+index 9f284538b..6bccb3849 100644
+--- a/arch/wasm/kernel/setup.c
++++ b/arch/wasm/kernel/setup.c
+@@ -13,6 +13,7 @@
+  *   __heap_base .. end  page allocator
+  */
+ 
++#include <linux/random.h>
+ #include <linux/init.h>
+ #include <linux/kernel.h>
+ #include <linux/memblock.h>
+@@ -135,6 +136,14 @@ void __init setup_arch(char **cmdline_p)
+ 	atomic_notifier_chain_register(&panic_notifier_list, &wasm_panic_nb);
+ 
+ 	wasm_host_get_cmdline(boot_command_line, COMMAND_LINE_SIZE);
++	{
++		/* the host's crypto.getRandomValues() is our only entropy source */
++		u8 seed[64];
++
++		wasm_host_get_random(seed, sizeof(seed));
++		add_bootloader_randomness(seed, sizeof(seed));
++		memzero_explicit(seed, sizeof(seed));
++	}
+ 	*cmdline_p = boot_command_line;
+ 
+ 	init_mm.start_code = 0;
+-- 
+2.43.0
+

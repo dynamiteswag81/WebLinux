@@ -38,7 +38,7 @@ const server = spawn(process.execPath, [path.join(ROOT, 'server.js'), String(POR
   { stdio: 'ignore' });
 let out = '';
 let ok = false;
-const browser = await chromium.launch();
+const browser = await chromium.launch({ args: ['--autoplay-policy=no-user-gesture-required'] });
 let page;
 try {
   page = await browser.newPage({ viewport: { width: 1100, height: 850 } });
