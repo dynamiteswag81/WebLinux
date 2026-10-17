@@ -177,6 +177,9 @@ Notes:
 - wasm-cc passes `-u __main_argc_argv`: crt1 references main weakly, so a main inside an
   archive (BusyBox's libbb) was not linked.
 - BusyBox: SHA1/SHA256_HWACCEL off (x86 asm); musl's empty libm.a etc. are created by build-libc.sh.
+- Git size: `public/initramfs.cpio` (12 MB) and `public/vmlinux.wasm` are committed so the page
+  runs from a checkout; every commit of them adds several MB to the history. Commit rebuilt
+  binaries only at milestones (or when a change needs them to be testable from a checkout).
 - Kernel patches: export only the new commit, e.g.
   `git -C linux format-patch --start-number 7 -o ../patches/linux HEAD~1`, so old patch files
   don't churn.
