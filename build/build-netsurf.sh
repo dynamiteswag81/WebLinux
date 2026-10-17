@@ -148,6 +148,12 @@ step_netsurf() {
 		NETSURF_FB_RESPATH='$${HOME}/.netsurf/:/usr/share/netsurf' \
 		>> $O/netsurf.log 2>&1 || fail "netsurf install" $O/netsurf.log
 	llvm-strip --strip-debug -o $O/netsurf $NS/netsurf/nsfb
+	# about 20% smaller (1 minute)
+	if command -v wasm-opt > /dev/null; then
+		wasm-opt -Os --enable-threads --enable-bulk-memory --enable-exception-handling \
+			--enable-mutable-globals --enable-sign-ext --enable-nontrapping-float-to-int \
+			$O/netsurf -o $O/netsurf.opt && mv $O/netsurf.opt $O/netsurf
+	fi
 	ls -la $O/netsurf; du -sh $O/install/usr/share/netsurf
 }
 
