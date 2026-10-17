@@ -1,0 +1,43 @@
+From 49de71d876ed1965428a63c9f3db1214b0298c74 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 17 Oct 2026 18:36:30 +0000
+Subject: [PATCH] wasm: input: no soft autorepeat, bigger evdev client buffers
+
+The browser already delivers key repeats, so drop EV_REP (the kernel's
+own repeat timer doubled them).  Hint 128 events per packet so evdev
+readers get room for bursts while they are busy.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/wasm/drivers/wasminput.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/arch/wasm/drivers/wasminput.c b/arch/wasm/drivers/wasminput.c
+index 592d607f1..15af4ad08 100644
+--- a/arch/wasm/drivers/wasminput.c
++++ b/arch/wasm/drivers/wasminput.c
+@@ -83,8 +83,8 @@ static int __init wasm_input_init(void)
+ 		goto err;
+ 	}
+ 
++	/* no EV_REP: the browser already sends repeats (value 2) */
+ 	__set_bit(EV_KEY, kbd->evbit);
+-	__set_bit(EV_REP, kbd->evbit);
+ 	for (i = KEY_ESC; i < BTN_MISC; i++)
+ 		__set_bit(i, kbd->keybit);
+ 	for (i = KEY_OK; i < BTN_DPAD_UP; i++)
+@@ -102,6 +102,11 @@ static int __init wasm_input_init(void)
+ 	input_set_abs_params(ptr, ABS_X, 0, WASM_INPUT_ABS_MAX, 0, 0);
+ 	input_set_abs_params(ptr, ABS_Y, 0, WASM_INPUT_ABS_MAX, 0, 0);
+ 
++	/* evdev sizes client buffers from this: room for bursts of typing
++	 * and pointer motion while a reader is busy drawing */
++	input_set_events_per_packet(kbd, 128);
++	input_set_events_per_packet(ptr, 128);
++
+ 	ret = input_register_device(kbd);
+ 	if (ret)
+ 		goto err;
+-- 
+2.43.0
+

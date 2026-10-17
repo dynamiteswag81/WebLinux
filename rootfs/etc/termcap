@@ -1,0 +1,17 @@
+# Terminal descriptions for bash/readline (its built-in termcap library).
+# xterm: the desktop's terminal (userland/desktop/term.c); linux: the
+# frame buffer console.  Both understand this ANSI/VT100 subset.
+xterm|xterm-256color|xterm-color|vt100|WebLinux terminal:\
+	:am:km:mi:ms:xn:co#80:li#24:it#8:\
+	:cl=\E[H\E[2J:cd=\E[J:ce=\E[K:cm=\E[%i%d;%dH:ho=\E[H:\
+	:up=\E[A:UP=\E[%dA:do=^J:DO=\E[%dB:nd=\E[C:RI=\E[%dC:le=^H:LE=\E[%dD:\
+	:cr=^M:sf=^J:sr=\EM:ta=^I:bl=^G:cs=\E[%i%d;%dr:sc=\E7:rc=\E8:\
+	:al=\E[L:AL=\E[%dL:dl=\E[M:DL=\E[%dM:dc=\E[P:DC=\E[%dP:ic=\E[@:IC=\E[%d@:ec=\E[%dX:\
+	:so=\E[7m:se=\E[27m:us=\E[4m:ue=\E[24m:md=\E[1m:mr=\E[7m:me=\E[0m:\
+	:ku=\E[A:kd=\E[B:kr=\E[C:kl=\E[D:kh=\E[H:@7=\E[F:kb=^?:\
+	:kD=\E[3~:kI=\E[2~:kP=\E[5~:kN=\E[6~:k1=\EOP:k2=\EOQ:k3=\EOR:k4=\EOS:\
+	:vi=\E[?25l:ve=\E[?25h:ti=\E[?1049h:te=\E[?1049l:
+linux|Linux console:\
+	:kh=\E[1~:@7=\E[4~:k1=\E[[A:k2=\E[[B:k3=\E[[C:k4=\E[[D:ti@:te@:tc=xterm:
+dumb|dumb terminal:\
+	:am:co#80:do=^J:cr=^M:bl=^G:sf=^J:

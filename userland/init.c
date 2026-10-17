@@ -6,8 +6,9 @@
  * so every change persists.  A blank disk is formatted first (ext2).
  *
  * Then mounts the virtual file systems, runs /etc/rc once, then keeps a login
- * bash on each console: ttyW0 (the host's debug console) and tty1 (the
- * frame buffer console, if there is one).  Each shell gets its own session
+ * bash on ttyW0 (the host's debug console) and the desktop (wldesk) on tty1,
+ * the frame buffer console; "weblinux.text" on the command line puts a
+ * shell there instead.  Each shell gets its own session
  * with its tty as the controlling terminal, so job control works.  Reaps
  * orphans and respawns shells when they exit.
  */
@@ -25,12 +26,16 @@
 struct console {
 	const char *dev;
 	char *term;
+	char *const *argv;
 	pid_t shell;
 };
 
+static char *const login_shell[] = { "/bin/bash", "--login", NULL };
+static char *const desktop[] = { "/usr/bin/wldesk", NULL };
+
 static struct console consoles[] = {
-	{ "/dev/ttyW0", "TERM=dumb", -1 },
-	{ "/dev/tty1", "TERM=linux", -1 },
+	{ "/dev/ttyW0", "TERM=dumb", login_shell, -1 },
+	{ "/dev/tty1", "TERM=linux", login_shell, -1 },
 };
 
 static char *shell_env[] = {
@@ -177,13 +182,14 @@ static pid_t spawn(char *const argv[], const struct console *con)
 int main(void)
 {
 	static char *const rc[] = { "/bin/bash", "/etc/rc", NULL };
-	static char *const sh[] = { "/bin/bash", "--login", NULL };
 	unsigned int i, n = 0;
 	int st;
 
 	if (getpid() != 1)
 		return 1;
 	persistent_root();
+	if (access(desktop[0], X_OK) == 0 && !cmdline_has("weblinux.text"))
+		consoles[1].argv = desktop;
 	mnt("proc", "/proc", "proc", MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL);
 	mnt("sysfs", "/sys", "sysfs", MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL);
 	mnt("devtmpfs", "/dev", "devtmpfs", MS_NOSUID, "mode=0755");
@@ -206,7 +212,7 @@ int main(void)
 	for (;;) {
 		for (i = 0; i < n; i++)
 			if (consoles[i].shell < 0)
-				consoles[i].shell = spawn(sh, &consoles[i]);
+				consoles[i].shell = spawn(consoles[i].argv, &consoles[i]);
 		pid_t p = wait(&st);
 		if (p < 0) {
 			if (errno == ECHILD)

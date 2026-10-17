@@ -1,0 +1,12 @@
+[
+ [null, "weblinux:/# "],
+ [{"sleep": 6000}, ""],
+ [{"kbd": "echo hello from the desktop terminal > /tmp/d; ls --color=always /"}, ""],
+ [{"sleep": 1500}, ""],
+ ["cat /tmp/d", "hello from the desktop terminal"],
+ [{"click": [40, 753]}, ""],
+ [{"sleep": 500}, ""],
+ [{"click": [60, 610]}, ""],
+ [{"sleep": 1500}, ""],
+ ["echo clicked", "clicked"]
+]

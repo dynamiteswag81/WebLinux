@@ -8,7 +8,9 @@
 // `expected` (a string, searched after the previous match).  An input of
 // {"kbd": "text"} types text + Enter on the canvas instead (keyboard
 // device, frame buffer console); {"sleep": ms} just waits; {"reload": 1}
-// reloads the page (a new boot, same browser storage).  --shot saves a
+// reloads the page (a new boot, same browser storage); {"click": [x, y]}
+// clicks on the canvas at frame buffer coordinates ("double": true for a
+// double click).  --shot saves a
 // screenshot of the canvas at the end.  @PORT@ in an input becomes the
 // page server's port (reachable from the guest as 10.0.2.2).  The default checks that
 // bash comes up and runs a pipeline.
@@ -60,6 +62,17 @@ try {
       await page.focus('#screen');
       await page.keyboard.type(input.kbd, { delay: 5 });
       await page.keyboard.press('Enter');
+    } else if (input && input.click) {
+      // canvas pixel coordinates; the canvas is scaled to fit (object-fit)
+      const [cx, cy] = input.click;
+      const geo = await page.evaluate(() => {
+        const c = document.getElementById('screen'), r = c.getBoundingClientRect();
+        return { l: r.left, t: r.top, w: r.width, h: r.height, cw: c.width, ch: c.height };
+      });
+      const sc = Math.min(geo.w / geo.cw, geo.h / geo.ch);
+      const x = geo.l + (geo.w - geo.cw * sc) / 2 + cx * sc, y = geo.t + (geo.h - geo.ch * sc) / 2 + cy * sc;
+      await page.mouse.move(x, y, { steps: 4 });
+      await page.mouse.click(x, y, { clickCount: input.double ? 2 : 1 });
     } else if (input && input.reload) {
       await page.reload();
       await hook();
