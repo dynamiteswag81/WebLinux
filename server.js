@@ -12,6 +12,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const zlib = require('zlib');
 
 const PORT = Number(process.argv[2] || process.env.PORT || 8080);
 const HOST = process.env.HOST || '127.0.0.1';
@@ -37,6 +38,21 @@ function isolationHeaders(res) {
   res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
 }
 
+const COMPRESS = new Set(['.wasm', '.cpio', '.js', '.html', '.css']);
+const gzCache = new Map(); // file -> { mtime, size, gz }
+function gzipped(file, st, cb) {
+  const c = gzCache.get(file);
+  if (c && c.mtime === st.mtimeMs && c.size === st.size) return cb(c.gz);
+  fs.readFile(file, (err, data) => {
+    if (err) return cb(null);
+    zlib.gzip(data, { level: 6 }, (err2, gz) => {
+      if (err2) return cb(null);
+      gzCache.set(file, { mtime: st.mtimeMs, size: st.size, gz });
+      cb(gz);
+    });
+  });
+}
+
 const server = http.createServer((req, res) => {
   isolationHeaders(res);
   let url;
@@ -56,6 +72,21 @@ const server = http.createServer((req, res) => {
   fs.stat(file, (err, st) => {
     if (err || !st.isFile()) {
       res.writeHead(404, { 'Content-Type': 'text/plain' }).end('not found');
+      return;
+    }
+    // the kernel and the root file system are big: send them gzipped
+    if (COMPRESS.has(path.extname(file)) && /\bgzip\b/.test(req.headers['accept-encoding'] || '')) {
+      gzipped(file, st, (gz) => {
+        if (!gz) return res.writeHead(500).end();
+        res.writeHead(200, {
+          'Content-Type': TYPES[path.extname(file)] || 'application/octet-stream',
+          'Content-Encoding': 'gzip',
+          'Content-Length': gz.length,
+          'Cache-Control': 'no-cache',
+          'Vary': 'Accept-Encoding',
+        });
+        res.end(req.method === 'HEAD' ? undefined : gz);
+      });
       return;
     }
     res.writeHead(200, {
