@@ -64,7 +64,8 @@ and applies `patches/linux/` (see CLAUDE.md).
 - `sh build/build-libc.sh`: UAPI headers, musl (port-musl.py, configure, make) and
   compiler-rt builtins into `$SYSROOT`. `sh build/build-bash.sh`.
 - `node build/mkinitramfs.js rootfs-test test/test.manifest public/initramfs.cpio`.
-- Boot test: `NODE_PATH=/opt/wltools/node_modules node test/boot-test.mjs [steps.json] [--log f]`
+- All boot tests: `sh test/run-all.sh` (or some: `sh test/run-all.sh jobs net`). One test:
+  `NODE_PATH=/opt/wltools/node_modules node test/boot-test.mjs [steps.json] [--log f] [--shot f.png]`
   boots the page in headless Chromium and checks bash runs a pipeline.
 - LLVM 20 crashes on asm `.set` aliases in wasm objects (kernel patch 0004 avoids them).
 
