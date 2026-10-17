@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# wasm32 Linux (musl) C compiler driver for WebLinux user programs.
+#
+# Compiles with clang for wasm32 against the musl sysroot and links
+# position independent modules (wasm-ld -pie) that import the machine's
+# shared memory and the kernel's "syscall" export.
+#
+# Behaves like a gcc cross compiler: any of -c/-S/-E/-M compiles, anything
+# else links.  Linker flags meant for ELF linkers are dropped.
+
+. /wl/build/env.sh
+
+RES="${WASM_CC_RESDIR:-C:/Users/dynam/wltools/msys64/clang64/lib/clang/23}"
+COMMON=($WASM_ARCH_FLAGS -fPIC -D__linux__ -D__linux -Dlinux -D__unix__ -D__unix -Dunix
+	-D__gnu_linux__ -nostdinc -isystem "$SYSROOT/include" -isystem "$RES/include"
+	-Wno-unused-command-line-argument)
+
+compile=0
+for a in "$@"; do
+	case "$a" in
+	-c|-S|-E|-M|-MM|-print-*|--version|-v|-dumpversion|-dumpmachine|-###) compile=1 ;;
+	esac
+done
+if [ $compile = 1 ]; then
+	exec clang "${COMMON[@]}" "$@"
+fi
+
+args=()
+skip_next=0
+for a in "$@"; do
+	if [ $skip_next = 1 ]; then skip_next=0; continue; fi
+	case "$a" in
+	-Wl,*)
+		IFS=, read -ra parts <<< "${a#-Wl,}"
+		drop_next=0
+		for p in "${parts[@]}"; do
+			if [ $drop_next = 1 ]; then drop_next=0; continue; fi
+			case "$p" in
+			-z) drop_next=1 ;;
+			--sort-common|--sort-section*|--gc-sections|--warn-common|--start-group|--end-group|\
+			-Map*|-Map=*|--verbose|-O*|--as-needed|--no-as-needed|--hash-style*|--build-id*|\
+			-static|--no-undefined|-rpath*|--rpath*|-soname*|--exclude-libs*|-E|--export-dynamic|\
+			--dynamic-list*|--version-script*|--fatal-warnings|-Bstatic|-Bdynamic) ;;
+			*) args+=("-Wl,$p") ;;
+			esac
+		done
+		;;
+	-static|-pie|-no-pie|-rdynamic|-s|-shared|-static-libgcc|-nostartfiles|-nostdlib|-nodefaultlibs) ;;
+	-T) skip_next=1 ;;
+	*) args+=("$a") ;;
+	esac
+done
+
+clang "${COMMON[@]}" -nostdlib -fuse-ld=lld \
+	-Wl,-pie,--experimental-pic,--import-memory,--shared-memory \
+	-Wl,--max-memory=4294967296,--no-entry,--export=_start,--export=__c_longjmp \
+	"$SYSROOT/lib/crt1.o" "${args[@]}" \
+	-L"$SYSROOT/lib" -lc "$SYSROOT/lib/libclang_rt.builtins-wasm32.a" || exit $?
+
+# WASM_FORK=1: make fork() work by letting the host save/replay the stack
+if [ -n "$WASM_FORK" ]; then
+	out=a.out
+	prev=
+	for a in "$@"; do
+		[ "$prev" = "-o" ] && out="$a"
+		case "$a" in -o?*) out="${a#-o}" ;; esac
+		prev="$a"
+	done
+	wasm-opt -O2 --enable-threads --enable-bulk-memory --enable-exception-handling \
+		--enable-mutable-globals --enable-sign-ext --enable-nontrapping-float-to-int \
+		--asyncify --pass-arg=asyncify-imports@linux.fork "$out" -o "$out" || exit 1
+fi

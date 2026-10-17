@@ -1,0 +1,33 @@
+#!/bin/sh
+# Cross-build BusyBox utilities for WebLinux (run inside MSYS2).
+# NOMMU mode (vfork + exec), no shells: bash is the shell.
+. /wl/build/env.sh
+SRC=/wl/src/busybox-1.37.0
+[ -d $SRC ] || (cd /wl/src && tar xjf /c/Users/dynam/wltools/dl/busybox-1.37.0.tar.bz2)
+cd $SRC
+
+BBMAKE="make CC=bash\ /wl/build/wasm-cc HOSTCC=/usr/bin/gcc HOSTCFLAGS=-std=gnu17 LD=/wl/build/wasm-ld-r AR=llvm-ar STRIP=true"
+
+if [ ! -f .config ]; then
+	eval $BBMAKE defconfig > /dev/null
+	# turn options off/on
+	for o in ASH HUSH SH_IS_ASH SH_IS_HUSH SH_IS_NONE BASH_IS_ASH BASH_IS_HUSH \
+		SELINUX FEATURE_HAVE_RPC PAM FEATURE_UTMP FEATURE_WTMP \
+		STATIC PIE BUILD_LIBBUSYBOX FEATURE_SHARED_BUSYBOX \
+		FEATURE_SUID FEATURE_SYSLOG_INFO LINUXRC INIT \
+		TC FEATURE_TC_INGRESS UBIATTACH UBIDETACH UBIMKVOL UBIRMVOL UBIRSVOL UBIUPDATEVOL UBIRENAME \
+		HWCLOCK NANDWRITE NANDDUMP FLASHCP FLASH_LOCK FLASH_UNLOCK FLASH_ERASEALL \
+		LOADFONT SETFONT LOADKMAP KBD_MODE SETKEYCODES SHOWKEY OPENVT CHVT DEALLOCVT FGCONSOLE \
+		INSMOD RMMOD LSMOD MODPROBE DEPMOD MODINFO \
+		SWAPON SWAPOFF MKSWAP FSCK_MINIX MKFS_MINIX FEATURE_MINIX2 \
+		ZCIP UDHCPD DHCPRELAY DUMPLEASES FEATURE_IPV6 ; do
+		sed -i "s/^CONFIG_$o=.*/# CONFIG_$o is not set/" .config
+	done
+	sed -i 's/^# CONFIG_NOMMU is not set/CONFIG_NOMMU=y/' .config
+	grep -q '^CONFIG_NOMMU=y' .config || echo CONFIG_NOMMU=y >> .config
+	yes '' | eval $BBMAKE oldconfig > /dev/null 2>&1
+fi
+
+eval $BBMAKE -j16 -k > make.log 2>&1
+grep -E 'error:' make.log | sed 's/:[0-9]*:[0-9]*:/:/' | sort | uniq -c | sort -rn | head -30
+ls -la busybox_unstripped busybox 2>/dev/null

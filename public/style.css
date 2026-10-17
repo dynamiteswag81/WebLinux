@@ -1,0 +1,29 @@
+:root {
+  --bg: #0b0f14;
+  --fg: #cfd8e3;
+  --dim: #7b8794;
+  --accent: #4fc3f7;
+  --bar: #11161d;
+  --line: #1d2530;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+  font: 13px/1.4 ui-monospace, "Cascadia Mono", Consolas, monospace; overflow: hidden; }
+#app { position: fixed; inset: 0; display: flex; flex-direction: column; }
+#screen { flex: 1; width: 100%; min-height: 0; display: block; background: #000;
+  image-rendering: pixelated; outline: none; cursor: default; }
+#bootlog { position: absolute; inset: 0 0 28px 0; display: flex; flex-direction: column;
+  background: rgba(8, 11, 15, 0.94); }
+#bootlog.hidden { display: none; }
+#log { flex: 1; margin: 0; padding: 12px 16px; overflow-y: auto; white-space: pre-wrap;
+  word-break: break-all; }
+#cons { display: flex; gap: 8px; align-items: center; padding: 6px 16px;
+  border-top: 1px solid var(--line); }
+#cons span { color: var(--accent); }
+#consin { flex: 1; background: transparent; border: 0; color: var(--fg); font: inherit; outline: none; }
+#bar { height: 28px; display: flex; align-items: center; gap: 8px; padding: 0 10px;
+  background: var(--bar); border-top: 1px solid var(--line); color: var(--dim); }
+#bar .spacer { flex: 1; }
+#bar button { background: transparent; color: var(--fg); border: 1px solid var(--line);
+  border-radius: 4px; padding: 2px 10px; font: inherit; cursor: pointer; }
+#bar button:hover { border-color: var(--accent); }

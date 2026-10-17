@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WebLinux</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <canvas id="screen" tabindex="0" aria-label="Linux desktop"></canvas>
+  <div id="bootlog" aria-live="polite">
+    <pre id="log"></pre>
+    <form id="cons"><span>ttyW0&gt;</span><input id="consin" autocomplete="off" spellcheck="false" placeholder="type into the kernel console"></form>
+  </div>
+  <div id="bar">
+    <span id="status">starting…</span>
+    <span class="spacer"></span>
+    <button id="btn-log" type="button" title="Show/hide the kernel console">Console</button>
+  </div>
+</div>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,320 @@
+From 14bd4ed32e03e3ba180651fc523fb7a7861bf02f Mon Sep 17 00:00:00 2001
+From: dynamiteswag81 <318143412+dynamiteswag81@users.noreply.github.com>
+Date: Sat, 17 Oct 2026 01:18:10 -0400
+Subject: [PATCH 3/3] wasm: fork() via memory snapshots
+
+The host saves a forking program's wasm stack with Asyncify; the kernel
+snapshots the process' private mappings when the child is created and
+restores them when the parent resumes, giving fork() memory isolation.
+The child may not unmap snapshotted regions meanwhile.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/wasm/include/asm/mmu.h       |  12 +++
+ arch/wasm/include/asm/processor.h |   1 +
+ arch/wasm/kernel/Makefile         |   2 +-
+ arch/wasm/kernel/fork.c           | 152 ++++++++++++++++++++++++++++++
+ arch/wasm/kernel/process.c        |   4 +
+ arch/wasm/kernel/syscalls.c       |  16 +++-
+ arch/wasm/kernel/wasm_internal.h  |   4 +
+ mm/nommu.c                        |  10 ++
+ 8 files changed, 198 insertions(+), 3 deletions(-)
+ create mode 100644 arch/wasm/include/asm/mmu.h
+ create mode 100644 arch/wasm/kernel/fork.c
+
+diff --git a/arch/wasm/include/asm/mmu.h b/arch/wasm/include/asm/mmu.h
+new file mode 100644
+index 000000000..0f351b7a7
+--- /dev/null
++++ b/arch/wasm/include/asm/mmu.h
+@@ -0,0 +1,12 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef _ASM_WASM_MMU_H
++#define _ASM_WASM_MMU_H
++
++struct wasm_snapshot;
++
++typedef struct {
++	unsigned long		end_brk;
++	struct wasm_snapshot	*snap;	/* fork() snapshots, see kernel/fork.c */
++} mm_context_t;
++
++#endif
+diff --git a/arch/wasm/include/asm/processor.h b/arch/wasm/include/asm/processor.h
+index 6e861c0c5..cf3ff3567 100644
+--- a/arch/wasm/include/asm/processor.h
++++ b/arch/wasm/include/asm/processor.h
+@@ -42,6 +42,7 @@ struct thread_struct {
+ 	struct task_struct *vfork_wake;	/* exec'd child to wake on resume */
+ 	unsigned long vfork_jmpbuf;
+ 	long vfork_pid;
++	unsigned int vfork_snap;	/* fork(): restore memory on resume */
+ 	/* user program state */
+ 	unsigned long sigmailbox;
+ 	unsigned int restart;		/* re-run the syscall after signals */
+diff --git a/arch/wasm/kernel/Makefile b/arch/wasm/kernel/Makefile
+index d133c2f7f..070340b66 100644
+--- a/arch/wasm/kernel/Makefile
++++ b/arch/wasm/kernel/Makefile
+@@ -1,4 +1,4 @@
+ # SPDX-License-Identifier: GPL-2.0
+ 
+ obj-y := setup.o irq.o time.o process.o entry.o signal.o syscalls.o \
+-	 syscall_table.o ptrace.o binfmt_wasm.o sections.o
++	 syscall_table.o ptrace.o binfmt_wasm.o sections.o fork.o
+diff --git a/arch/wasm/kernel/fork.c b/arch/wasm/kernel/fork.c
+new file mode 100644
+index 000000000..610513f78
+--- /dev/null
++++ b/arch/wasm/kernel/fork.c
+@@ -0,0 +1,152 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * fork() on top of vfork().
++ *
++ * A wasm call stack can't be duplicated, so a forked child always runs on
++ * its parent's worker while the parent is frozen (see process.c).  What
++ * vfork lacks compared to fork is memory isolation: the child scribbles on
++ * the parent's memory.  For fork() we snapshot every private mapping of
++ * the process before the child runs and put it back when the parent
++ * resumes, so the parent sees its memory exactly as it was at fork time.
++ *
++ * While a snapshot is live the child must not unmap the snapshotted
++ * regions (the memory could be reused before we restore it); such munmaps
++ * are ignored and the regions simply stay with the parent.  Mappings the
++ * child creates are unmapped again when the parent resumes.
++ */
++
++#include <linux/mm.h>
++#include <linux/mman.h>
++#include <linux/slab.h>
++#include <linux/sched.h>
++#include <linux/sched/mm.h>
++
++#include "wasm_internal.h"
++
++struct wasm_snap_region {
++	unsigned long start, len;
++	void *copy;
++};
++
++struct wasm_snapshot {
++	struct wasm_snapshot *prev;	/* nested forks on the same mm */
++	int nr;
++	struct wasm_snap_region r[];
++};
++
++static bool snap_vma(struct vm_area_struct *vma)
++{
++	return !(vma->vm_flags & (VM_SHARED | VM_MAYSHARE | VM_IO | VM_PFNMAP));
++}
++
++int wasm_snapshot_take(struct task_struct *tsk)
++{
++	struct mm_struct *mm = tsk->mm;
++	struct vm_area_struct *vma;
++	struct wasm_snapshot *s;
++	int n = 0, i = 0;
++
++	mmap_read_lock(mm);
++	{
++		VMA_ITERATOR(vmi, mm, 0);
++
++		for_each_vma(vmi, vma)
++			if (snap_vma(vma))
++				n++;
++	}
++	s = kzalloc(struct_size(s, r, n), GFP_KERNEL);
++	if (!s)
++		goto nomem;
++	{
++		VMA_ITERATOR(vmi, mm, 0);
++
++		for_each_vma(vmi, vma) {
++			unsigned long len = vma->vm_end - vma->vm_start;
++
++			if (!snap_vma(vma) || i >= n)
++				continue;
++			s->r[i].copy = kvmalloc(len, GFP_KERNEL);
++			if (!s->r[i].copy)
++				goto nomem;
++			memcpy(s->r[i].copy, (void *)vma->vm_start, len);
++			s->r[i].start = vma->vm_start;
++			s->r[i].len = len;
++			i++;
++		}
++	}
++	s->nr = i;
++	s->prev = mm->context.snap;
++	mm->context.snap = s;
++	mmap_read_unlock(mm);
++	return 0;
++
++nomem:
++	mmap_read_unlock(mm);
++	if (s) {
++		while (i--)
++			kvfree(s->r[i].copy);
++		kfree(s);
++	}
++	return -ENOMEM;
++}
++
++static bool in_snapshot(struct wasm_snapshot *s, unsigned long start)
++{
++	int i;
++
++	for (i = 0; i < s->nr; i++)
++		if (s->r[i].start == start)
++			return true;
++	return false;
++}
++
++/* Called as the parent, which is current again. */
++void wasm_snapshot_restore(struct task_struct *tsk)
++{
++	struct mm_struct *mm = tsk->mm;
++	struct wasm_snapshot *s = mm->context.snap;
++	int i;
++
++	if (!s)
++		return;
++	mm->context.snap = s->prev;
++
++	/* drop what the child mapped after the fork */
++	for (;;) {
++		unsigned long start = 0, len = 0;
++		struct vm_area_struct *vma;
++		VMA_ITERATOR(vmi, mm, 0);
++
++		mmap_read_lock(mm);
++		for_each_vma(vmi, vma) {
++			if (snap_vma(vma) && !in_snapshot(s, vma->vm_start)) {
++				start = vma->vm_start;
++				len = vma->vm_end - vma->vm_start;
++				break;
++			}
++		}
++		mmap_read_unlock(mm);
++		if (!len || vm_munmap(start, len))
++			break;
++	}
++
++	for (i = 0; i < s->nr; i++) {
++		memcpy((void *)s->r[i].start, s->r[i].copy, s->r[i].len);
++		kvfree(s->r[i].copy);
++	}
++	kfree(s);
++}
++
++/* mm/nommu.c: refuse to unmap memory a frozen fork parent still owns */
++bool wasm_munmap_frozen(struct mm_struct *mm, unsigned long start, size_t len)
++{
++	struct wasm_snapshot *s;
++	int i;
++
++	for (s = mm->context.snap; s; s = s->prev)
++		for (i = 0; i < s->nr; i++)
++			if (start < s->r[i].start + s->r[i].len &&
++			    s->r[i].start < start + len)
++				return true;
++	return false;
++}
+diff --git a/arch/wasm/kernel/process.c b/arch/wasm/kernel/process.c
+index c048096fb..748100716 100644
+--- a/arch/wasm/kernel/process.c
++++ b/arch/wasm/kernel/process.c
+@@ -171,6 +171,10 @@ static void __noreturn wasm_vfork_resume(struct task_struct *last)
+ 	}
+ 
+ 	local_irq_enable();
++	if (tsk->thread.vfork_snap) {
++		tsk->thread.vfork_snap = 0;
++		wasm_snapshot_restore(tsk);
++	}
+ 	tsk->thread.in_user = 1;
+ 	wasm_host_vfork_resume(jmpbuf, pid);
+ }
+diff --git a/arch/wasm/kernel/syscalls.c b/arch/wasm/kernel/syscalls.c
+index c9720ee47..b32bd5ae1 100644
+--- a/arch/wasm/kernel/syscalls.c
++++ b/arch/wasm/kernel/syscalls.c
+@@ -15,7 +15,9 @@
+  * over this worker and returns 0 from here.  The parent is frozen; when
+  * the child execs or exits the parent resumes with longjmp(jmpbuf, pid).
+  */
+-SYSCALL_DEFINE1(wasm_vfork, unsigned long, jmpbuf)
++#define WASM_VFORK_SNAPSHOT	1	/* fork() semantics: isolate memory */
++
++SYSCALL_DEFINE2(wasm_vfork, unsigned long, jmpbuf, unsigned long, flags)
+ {
+ 	struct task_struct *parent = current;
+ 	struct kernel_clone_args args = {
+@@ -26,12 +28,22 @@ SYSCALL_DEFINE1(wasm_vfork, unsigned long, jmpbuf)
+ 
+ 	if (!jmpbuf)
+ 		return -EINVAL;
++	if (flags & WASM_VFORK_SNAPSHOT) {
++		int err = wasm_snapshot_take(parent);
++
++		if (err)
++			return err;
++	}
+ 
+ 	parent->thread.vforking = 1;
+ 	pid = kernel_clone(&args);
+ 	parent->thread.vforking = 0;
+-	if (pid < 0)
++	if (pid < 0) {
++		if (flags & WASM_VFORK_SNAPSHOT)
++			wasm_snapshot_restore(parent);
+ 		return pid;
++	}
++	parent->thread.vfork_snap = flags & WASM_VFORK_SNAPSHOT;
+ 
+ 	parent->thread.vfork_jmpbuf = jmpbuf;
+ 	parent->thread.vfork_pid = pid;
+diff --git a/arch/wasm/kernel/wasm_internal.h b/arch/wasm/kernel/wasm_internal.h
+index 25eeca85a..672856f06 100644
+--- a/arch/wasm/kernel/wasm_internal.h
++++ b/arch/wasm/kernel/wasm_internal.h
+@@ -30,4 +30,8 @@ void wasm_exit_to_user(struct pt_regs *regs);
+ void __noreturn wasm_start_exec(void);
+ void wasm_do_signal(struct pt_regs *regs);
+ 
++/* fork.c */
++int wasm_snapshot_take(struct task_struct *tsk);
++void wasm_snapshot_restore(struct task_struct *tsk);
++
+ #endif
+diff --git a/mm/nommu.c b/mm/nommu.c
+index c3a23b082..0eb64b28f 100644
+--- a/mm/nommu.c
++++ b/mm/nommu.c
+@@ -1423,6 +1423,10 @@ static int vmi_shrink_vma(struct vma_iterator *vmi,
+  * - under NOMMU conditions the chunk to be unmapped must be backed by a single
+  *   VMA, though it need not cover the whole VMA
+  */
++#ifdef CONFIG_WASM
++bool wasm_munmap_frozen(struct mm_struct *mm, unsigned long start, size_t len);
++#endif
++
+ int do_munmap(struct mm_struct *mm, unsigned long start, size_t len, struct list_head *uf)
+ {
+ 	VMA_ITERATOR(vmi, mm, start);
+@@ -1436,6 +1440,12 @@ int do_munmap(struct mm_struct *mm, unsigned long start, size_t len, struct list
+ 
+ 	end = start + len;
+ 
++#ifdef CONFIG_WASM
++	/* a frozen fork() parent still owns this memory (arch/wasm/kernel/fork.c) */
++	if (wasm_munmap_frozen(mm, start, len))
++		return 0;
++#endif
++
+ 	/* find the first potentially overlapping VMA */
+ 	vma = vma_find(&vmi, end);
+ 	if (!vma) {
+-- 
+2.55.0.windows.4
+

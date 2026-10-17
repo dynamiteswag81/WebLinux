@@ -1,0 +1,10 @@
+#!/bin/sh
+# wasm-ld for "ld -r" style partial links from ELF-minded build systems.
+args=
+for a in "$@"; do
+	case "$a" in
+	-nostdlib|-static|--warn-common|--sort-common|-EL|-m*|--gc-sections) ;;
+	*) args="$args \"$a\"" ;;
+	esac
+done
+eval exec wasm-ld $args

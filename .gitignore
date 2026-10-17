@@ -1,0 +1,10 @@
+# Third-party trees, fetched by build/fetch-sources.sh
+/linux/
+/src/
+# Build output
+/build/obj/
+*.o
+*.log
+node_modules/
+__pycache__/
+*_save.json
