@@ -32,7 +32,7 @@ Working today:
 
 ## Run it
 
-You need Node.js. From a checkout:
+You need Node.js. From a checkout, run `start.bat` (Windows) or `./start.sh`, or:
 
 ```sh
 node server.js 8080

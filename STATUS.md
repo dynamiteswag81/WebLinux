@@ -182,7 +182,6 @@ Notes:
    formatting a new disk. The desktop's full redraw is 4 ms.
 4. Desktop polish: clipboard with the host, terminal selection/scrollback, time zone from the
    browser, wallpaper/settings, an app launcher entry per installed program.
-5. Host: on `pagehide` ask the kernel to sync (IRQ_HOST); a UI button to reset the disk
-   (delete the OPFS file); a start script (`start.bat`).
+5. (done) sync on hidden/pagehide, Reset disk and Full screen buttons, start.bat/start.sh.
 6. Size: initramfs is 13.7 MB (5.4 MB gzipped by server.js); NetSurf is 6.5 MB.
 7. Keep README.md's status list current.
