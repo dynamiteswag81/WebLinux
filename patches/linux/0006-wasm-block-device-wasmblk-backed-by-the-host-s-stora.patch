@@ -1,0 +1,284 @@
+From 604c14f0e92d0f8264a3fc9576c68e10080859fb Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 17 Oct 2026 18:13:05 +0000
+Subject: [PATCH] wasm: block device (wasmblk) backed by the host's storage
+
+/dev/wda: blk-mq, one request in flight, described in a shared slot
+(op, sector, memory segments) that the host's disk worker serves before
+raising WASM_IRQ_BLOCK.  The driver waits at probe for the host to open
+the store and publish the capacity.  defconfig: BLOCK, ext4 (also for
+ext2), overlayfs.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/wasm/configs/wasm_defconfig |   6 +-
+ arch/wasm/drivers/Kconfig        |   7 ++
+ arch/wasm/drivers/Makefile       |   1 +
+ arch/wasm/drivers/wasmblk.c      | 207 +++++++++++++++++++++++++++++++
+ 4 files changed, 220 insertions(+), 1 deletion(-)
+ create mode 100644 arch/wasm/drivers/wasmblk.c
+
+diff --git a/arch/wasm/configs/wasm_defconfig b/arch/wasm/configs/wasm_defconfig
+index 63436a9d0..8d4bbad69 100644
+--- a/arch/wasm/configs/wasm_defconfig
++++ b/arch/wasm/configs/wasm_defconfig
+@@ -28,7 +28,9 @@ CONFIG_EXPERT=y
+ # CONFIG_PROFILING is not set
+ # CONFIG_KEXEC is not set
+ # CONFIG_MODULES is not set
+-# CONFIG_BLOCK is not set
++# CONFIG_BLOCK_LEGACY_AUTOLOAD is not set
++# CONFIG_IOSCHED_BFQ is not set
++# CONFIG_PARTITION_ADVANCED is not set
+ CONFIG_BINFMT_SCRIPT=y
+ # CONFIG_COREDUMP is not set
+ # CONFIG_COMPAT_BRK is not set
+@@ -53,6 +55,8 @@ CONFIG_FONT_TER16x32=y
+ # CONFIG_USB_SUPPORT is not set
+ # CONFIG_VIRTIO_MENU is not set
+ # CONFIG_IOMMU_SUPPORT is not set
++CONFIG_EXT4_FS=y
++CONFIG_OVERLAY_FS=y
+ CONFIG_TMPFS=y
+ # CONFIG_MISC_FILESYSTEMS is not set
+ # CONFIG_CRYPTO is not set
+diff --git a/arch/wasm/drivers/Kconfig b/arch/wasm/drivers/Kconfig
+index b452b6c99..a299f453a 100644
+--- a/arch/wasm/drivers/Kconfig
++++ b/arch/wasm/drivers/Kconfig
+@@ -22,3 +22,10 @@ config WASM_INPUT
+ 	default y
+ 	help
+ 	  Keyboard and absolute pointer events from the page.
++
++config WASM_BLK
++	bool "Host storage block device (wda)"
++	depends on BLOCK
++	default y
++	help
++	  /dev/wda, backed by browser storage through the host's disk worker.
+diff --git a/arch/wasm/drivers/Makefile b/arch/wasm/drivers/Makefile
+index 594c49165..be9ca36a6 100644
+--- a/arch/wasm/drivers/Makefile
++++ b/arch/wasm/drivers/Makefile
+@@ -2,3 +2,4 @@
+ obj-$(CONFIG_WASM_CONSOLE) += console.o
+ obj-$(CONFIG_WASM_FB) += wasmfb.o
+ obj-$(CONFIG_WASM_INPUT) += wasminput.o
++obj-$(CONFIG_WASM_BLK) += wasmblk.o
+diff --git a/arch/wasm/drivers/wasmblk.c b/arch/wasm/drivers/wasmblk.c
+new file mode 100644
+index 000000000..5403fc828
+--- /dev/null
++++ b/arch/wasm/drivers/wasmblk.c
+@@ -0,0 +1,207 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Block device backed by the host's storage (/dev/wda).
++ *
++ * The host runs a disk worker that owns the backing store (a file in the
++ * browser's Origin Private File System, or memory).  One request is in
++ * flight at a time: the kernel fills the request slot with the operation,
++ * the sector and the list of memory segments, bumps 'doorbell' and
++ * notifies.  The disk worker copies data straight between the store and
++ * the segments, sets 'status', stores the doorbell value in 'done' and
++ * raises WASM_IRQ_BLOCK.
++ *
++ * At probe the host has not opened the store yet, so the driver waits
++ * (up to WASM_BLK_WAIT_MS) for it to publish the capacity and set 'ready'.
++ */
++
++#include <linux/blk-mq.h>
++#include <linux/blkdev.h>
++#include <linux/init.h>
++#include <linux/interrupt.h>
++#include <linux/module.h>
++
++#include <asm/wasm.h>
++
++#define WASM_BLK_MAX_SEGS	128
++#define WASM_BLK_WAIT_MS	10000
++
++enum { WASM_BLK_READ, WASM_BLK_WRITE, WASM_BLK_FLUSH, WASM_BLK_DISCARD };
++
++/* shared with the host; layout is ABI (public/js/disk.js) */
++struct wasm_blk_state {
++	u32 ready;		/* host: 1 = store open, 2 = no disk */
++	u32 ro;			/* host: read-only store */
++	u64 sectors;		/* host: capacity, 512-byte sectors */
++	u32 doorbell;		/* kernel: request sequence number */
++	u32 done;		/* host: last completed request */
++	/* the request slot */
++	u32 op;
++	s32 status;		/* host: 0 or -errno */
++	u64 sector;
++	u32 nseg;
++	u32 pad;
++	struct { u32 addr, len; } seg[WASM_BLK_MAX_SEGS];
++};
++
++static struct wasm_blk_state wasm_blk __aligned(8);
++static struct blk_mq_tag_set wasm_blk_tags;
++static struct gendisk *wasm_blk_disk;
++static struct request *wasm_blk_cur;
++static DEFINE_SPINLOCK(wasm_blk_lock);
++
++static blk_status_t wasm_blk_queue_rq(struct blk_mq_hw_ctx *hctx,
++				      const struct blk_mq_queue_data *bd)
++{
++	struct request *rq = bd->rq;
++	struct req_iterator iter;
++	struct bio_vec bv;
++	unsigned long flags;
++	u32 n = 0, op;
++
++	switch (req_op(rq)) {
++	case REQ_OP_READ:
++		op = WASM_BLK_READ;
++		break;
++	case REQ_OP_WRITE:
++		op = WASM_BLK_WRITE;
++		break;
++	case REQ_OP_FLUSH:
++		op = WASM_BLK_FLUSH;
++		break;
++	case REQ_OP_DISCARD:
++		op = WASM_BLK_DISCARD;
++		break;
++	default:
++		return BLK_STS_NOTSUPP;
++	}
++
++	spin_lock_irqsave(&wasm_blk_lock, flags);
++	if (wasm_blk_cur) {
++		spin_unlock_irqrestore(&wasm_blk_lock, flags);
++		return BLK_STS_DEV_RESOURCE;
++	}
++	blk_mq_start_request(rq);
++	wasm_blk_cur = rq;
++
++	wasm_blk.op = op;
++	wasm_blk.sector = blk_rq_pos(rq);
++	if (op == WASM_BLK_READ || op == WASM_BLK_WRITE) {
++		rq_for_each_segment(bv, rq, iter) {
++			wasm_blk.seg[n].addr = (u32)(unsigned long)bvec_virt(&bv);
++			wasm_blk.seg[n].len = bv.bv_len;
++			n++;
++		}
++	} else if (op == WASM_BLK_DISCARD) {
++		/* length in bytes of the range */
++		wasm_blk.seg[0].addr = 0;
++		wasm_blk.seg[0].len = blk_rq_bytes(rq);
++		n = 1;
++	}
++	wasm_blk.nseg = n;
++	wasm_blk.status = 0;
++	__atomic_fetch_add(&wasm_blk.doorbell, 1, __ATOMIC_SEQ_CST);
++	wasm_notify(&wasm_blk.doorbell);
++	spin_unlock_irqrestore(&wasm_blk_lock, flags);
++	return BLK_STS_OK;
++}
++
++static irqreturn_t wasm_blk_irq(int irq, void *dev_id)
++{
++	struct request *rq = NULL;
++	blk_status_t st = BLK_STS_OK;
++	unsigned long flags;
++
++	spin_lock_irqsave(&wasm_blk_lock, flags);
++	if (wasm_blk_cur &&
++	    __atomic_load_n(&wasm_blk.done, __ATOMIC_ACQUIRE) == wasm_blk.doorbell) {
++		rq = wasm_blk_cur;
++		wasm_blk_cur = NULL;
++		if (wasm_blk.status)
++			st = errno_to_blk_status(wasm_blk.status);
++	}
++	spin_unlock_irqrestore(&wasm_blk_lock, flags);
++
++	if (rq) {
++		blk_mq_end_request(rq, st);
++		blk_mq_run_hw_queues(wasm_blk_disk->queue, true);
++	}
++	return IRQ_HANDLED;
++}
++
++static const struct blk_mq_ops wasm_blk_mq_ops = {
++	.queue_rq	= wasm_blk_queue_rq,
++};
++
++static const struct block_device_operations wasm_blk_fops = {
++	.owner		= THIS_MODULE,
++};
++
++static int __init wasm_blk_init(void)
++{
++	struct queue_limits lim = {
++		.logical_block_size	= 512,
++		.max_segments		= WASM_BLK_MAX_SEGS,
++		.max_hw_sectors		= 1024,
++		.max_hw_discard_sectors	= UINT_MAX >> 9,
++		.features		= BLK_FEAT_WRITE_CACHE,
++	};
++	int major, ret;
++	u64 t;
++
++	wasm_host_dev_register("blk", &wasm_blk);
++	for (t = 0; t < WASM_BLK_WAIT_MS &&
++	     !__atomic_load_n(&wasm_blk.ready, __ATOMIC_ACQUIRE); t += 10)
++		__builtin_wasm_memory_atomic_wait32((int *)&wasm_blk.ready, 0,
++						    10 * NSEC_PER_MSEC);
++	if (wasm_blk.ready != 1 || !wasm_blk.sectors) {
++		pr_info("wasmblk: no disk\n");
++		return 0;
++	}
++
++	major = register_blkdev(0, "wd");
++	if (major < 0)
++		return major;
++
++	wasm_blk_tags.ops = &wasm_blk_mq_ops;
++	wasm_blk_tags.nr_hw_queues = 1;
++	wasm_blk_tags.queue_depth = 1;
++	wasm_blk_tags.numa_node = NUMA_NO_NODE;
++	ret = blk_mq_alloc_tag_set(&wasm_blk_tags);
++	if (ret)
++		goto err_major;
++
++	wasm_blk_disk = blk_mq_alloc_disk(&wasm_blk_tags, &lim, NULL);
++	if (IS_ERR(wasm_blk_disk)) {
++		ret = PTR_ERR(wasm_blk_disk);
++		goto err_tags;
++	}
++	wasm_blk_disk->major = major;
++	wasm_blk_disk->first_minor = 0;
++	wasm_blk_disk->minors = 16;
++	wasm_blk_disk->fops = &wasm_blk_fops;
++	strscpy(wasm_blk_disk->disk_name, "wda", DISK_NAME_LEN);
++	set_capacity(wasm_blk_disk, wasm_blk.sectors);
++	if (wasm_blk.ro)
++		set_disk_ro(wasm_blk_disk, true);
++
++	ret = request_irq(WASM_IRQ_BLOCK, wasm_blk_irq, 0, "wasmblk", NULL);
++	if (ret)
++		goto err_disk;
++	ret = add_disk(wasm_blk_disk);
++	if (ret)
++		goto err_irq;
++	pr_info("wasmblk: wda: %llu sectors%s\n", wasm_blk.sectors,
++		wasm_blk.ro ? " (read-only)" : "");
++	return 0;
++
++err_irq:
++	free_irq(WASM_IRQ_BLOCK, NULL);
++err_disk:
++	put_disk(wasm_blk_disk);
++err_tags:
++	blk_mq_free_tag_set(&wasm_blk_tags);
++err_major:
++	unregister_blkdev(major, "wd");
++	return ret;
++}
++device_initcall(wasm_blk_init);
+-- 
+2.43.0
+

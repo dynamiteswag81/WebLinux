@@ -1,7 +1,11 @@
 /*
  * WebLinux /sbin/init.
  *
- * Mounts the virtual file systems, runs /etc/rc once, then keeps a login
+ * If there is a disk (/dev/wda, kept in browser storage by the host), the
+ * root becomes an overlay: the initramfs below, the disk's /upper above,
+ * so every change persists.  A blank disk is formatted first (ext2).
+ *
+ * Then mounts the virtual file systems, runs /etc/rc once, then keeps a login
  * bash on each console: ttyW0 (the host's debug console) and tty1 (the
  * frame buffer console, if there is one).  Each shell gets its own session
  * with its tty as the controlling terminal, so job control works.  Reaps
@@ -42,6 +46,112 @@ static void mnt(const char *src, const char *dir, const char *type,
 		fprintf(stderr, "init: mount %s on %s: %s\n", type, dir, strerror(errno));
 }
 
+static int run(char *const argv[])
+{
+	int st;
+	pid_t pid = vfork();
+	if (pid == 0) {
+		execve(argv[0], argv, shell_env);
+		_exit(127);
+	}
+	if (pid < 0)
+		return -1;
+	while (waitpid(pid, &st, 0) < 0)
+		if (errno != EINTR)
+			return -1;
+	return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+}
+
+/* 1: has an ext2/3/4 superblock, 0: all zeros (never used), -1: other */
+static int disk_state(const char *dev)
+{
+	unsigned char b[4096];
+	int fd = open(dev, O_RDONLY), i;
+	if (fd < 0)
+		return -1;
+	i = pread(fd, b, sizeof(b), 0);
+	close(fd);
+	if (i != sizeof(b))
+		return -1;
+	if (b[1080] == 0x53 && b[1081] == 0xef)
+		return 1;
+	for (i = 0; i < (int)sizeof(b); i++)
+		if (b[i])
+			return -1;
+	return 0;
+}
+
+static int cmdline_has(const char *word)
+{
+	char buf[1024];
+	int fd, n;
+
+	mnt("proc", "/proc", "proc", 0, NULL);
+	fd = open("/proc/cmdline", O_RDONLY);
+	n = fd < 0 ? 0 : read(fd, buf, sizeof(buf) - 1);
+	if (fd >= 0)
+		close(fd);
+	umount("/proc");
+	buf[n > 0 ? n : 0] = 0;
+	for (char *p = buf; (p = strstr(p, word)); p++)
+		if ((p == buf || p[-1] == ' ') &&
+		    (p[strlen(word)] == 0 || p[strlen(word)] == ' ' || p[strlen(word)] == '\n'))
+			return 1;
+	return 0;
+}
+
+/* Overlay the initramfs with the disk and make that the root. */
+static void persistent_root(void)
+{
+	static char *const mkfs[] = { "/sbin/mke2fs", "-q", "-L", "weblinux", "/dev/wda", NULL };
+	const char *dev = "/dev/wda";
+	int st;
+
+	if (cmdline_has("weblinux.volatile"))
+		return;
+	mnt("devtmpfs", "/dev", "devtmpfs", MS_NOSUID, "mode=0755");
+	st = disk_state(dev);
+	if (st == 0) {
+		fprintf(stderr, "init: formatting the new disk\n");
+		if (run(mkfs) != 0)
+			st = -1;
+		else
+			st = 1;
+	}
+	if (st != 1) {
+		if (access(dev, F_OK) == 0)
+			fprintf(stderr, "init: %s has no ext2/3/4 file system; not using it\n", dev);
+		goto out;
+	}
+	mkdir("/.disk", 0700);
+	if (mount(dev, "/.disk", "ext4", MS_NOATIME, NULL) < 0) {
+		fprintf(stderr, "init: mount %s: %s\n", dev, strerror(errno));
+		goto out;
+	}
+	mkdir("/.disk/upper", 0755);
+	mkdir("/.disk/work", 0755);
+	mkdir("/.root", 0755);
+	if (mount("overlay", "/.root", "overlay", 0,
+		  "lowerdir=/,upperdir=/.disk/upper,workdir=/.disk/work") < 0) {
+		fprintf(stderr, "init: overlay: %s\n", strerror(errno));
+		umount("/.disk");
+		goto out;
+	}
+	mkdir("/.root/mnt", 0755);
+	mkdir("/.root/mnt/disk", 0755);
+	mount("/.disk", "/.root/mnt/disk", NULL, MS_MOVE, NULL);
+	umount2("/dev", MNT_DETACH);
+	if (chdir("/.root") == 0 && mount(".", "/", NULL, MS_MOVE, NULL) == 0 &&
+	    chroot(".") == 0 && chdir("/") == 0) {
+		fprintf(stderr, "init: root is the initramfs + %s (persistent)\n", dev);
+		return;
+	}
+	fprintf(stderr, "init: switching root: %s\n", strerror(errno));
+	return;
+out:
+	umount2("/dev", MNT_DETACH);
+}
+
 /* Child side of the vfork: only syscalls, then exec. */
 static pid_t spawn(char *const argv[], const struct console *con)
 {
@@ -73,6 +183,7 @@ int main(void)
 
 	if (getpid() != 1)
 		return 1;
+	persistent_root();
 	mnt("proc", "/proc", "proc", MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL);
 	mnt("sysfs", "/sys", "sysfs", MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL);
 	mnt("devtmpfs", "/dev", "devtmpfs", MS_NOSUID, "mode=0755");

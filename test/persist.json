@@ -1,0 +1,8 @@
+[
+ [null, "weblinux:/# "],
+ ["echo persisted-$((7*6)) > /root/note; sync; echo sync-$((1+1))", "sync-2"],
+ [{"reload": 1}, "(persistent)"],
+ [null, "weblinux:/# "],
+ ["cat /root/note", "persisted-42"],
+ ["rm /root/note; sync; echo gone-$((1+2))", "gone-3"]
+]

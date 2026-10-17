@@ -7,7 +7,8 @@
 // (null sends nothing), then wait until the console output contains
 // `expected` (a string, searched after the previous match).  An input of
 // {"kbd": "text"} types text + Enter on the canvas instead (keyboard
-// device, frame buffer console); {"sleep": ms} just waits.  --shot saves a
+// device, frame buffer console); {"sleep": ms} just waits; {"reload": 1}
+// reloads the page (a new boot, same browser storage).  --shot saves a
 // screenshot of the canvas at the end.  The default checks that
 // bash comes up and runs a pipeline.
 
@@ -43,7 +44,7 @@ try {
   page.on('pageerror', (e) => { out += `\n[pageerror] ${e.message}\n`; });
   await new Promise((r) => setTimeout(r, 300));
   await page.goto(`http://127.0.0.1:${PORT}/`);
-  await page.evaluate(() => {
+  const hook = () => page.evaluate(() => {
     self.__out = '';
     const hook = () => {
       if (!self.machine) return setTimeout(hook, 5);
@@ -51,12 +52,17 @@ try {
     };
     hook();
   });
+  await hook();
   let from = 0;
   for (const [input, expect] of steps) {
     if (input && input.kbd !== undefined) {
       await page.focus('#screen');
       await page.keyboard.type(input.kbd, { delay: 5 });
       await page.keyboard.press('Enter');
+    } else if (input && input.reload) {
+      await page.reload();
+      await hook();
+      from = 0;
     } else if (input && input.sleep) {
       await new Promise((r) => setTimeout(r, input.sleep));
     } else if (input !== null) {

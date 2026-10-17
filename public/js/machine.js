@@ -13,6 +13,8 @@ export class Machine extends EventTarget {
     this.cmdline = opts.cmdline || 'console=ttyW0 rdinit=/init';
     this.kernelUrl = opts.kernelUrl || 'vmlinux.wasm';
     this.initrdUrl = opts.initrdUrl || 'initramfs.cpio';
+    this.disk = { backend: opts.disk || 'opfs', name: opts.diskName || 'disk0.img',
+      sizeMiB: opts.diskSizeMiB || 256 };
     this.workers = new Map();     // wctl address -> Worker
     this.dev = {};                // device name -> address in memory
     this.timer = null;
@@ -81,6 +83,7 @@ export class Machine extends EventTarget {
       case 'dev':
         this.dev[m.name] = m.addr;
         this._emit('device', m);
+        if (m.name === 'blk') this._startDisk(m.addr);
         if (this.dev.irq && this.dev.timer_deadline && this.dev.timer_seq && !this.timer)
           this._startTimer();
         break;
@@ -100,6 +103,18 @@ export class Machine extends EventTarget {
       memory: this.memory, clock: this.clock, base: this.base,
       irq: this.dev.irq, deadline: this.dev.timer_deadline, seq: this.dev.timer_seq,
     });
+  }
+
+  _startDisk(state) {
+    const w = new Worker(new URL('./disk.js', import.meta.url));
+    w.onmessage = ({ data }) => {
+      if (data.t === 'log') this._emit('log', data.s);
+      if (data.t === 'ready') this._emit('disk', data);
+    };
+    w.postMessage({ memory: this.memory, state, irq: this.dev.irq, ...this.disk });
+    this.diskWorker = w;
+    // release the disk file promptly so a reloaded page can open it
+    addEventListener('pagehide', () => w.terminate());
   }
 
   // Feed bytes to ttyW0 through the console input ring.
@@ -154,6 +169,7 @@ export class Machine extends EventTarget {
     for (const w of this.workers.values()) w.terminate();
     this.workers.clear();
     if (this.timer) this.timer.terminate();
+    if (this.diskWorker) this.diskWorker.terminate();
     this._emit('halt', code);
   }
 }

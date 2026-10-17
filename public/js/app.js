@@ -10,6 +10,8 @@ const status = $('status');
 const params = new URLSearchParams(location.search);
 const machine = new Machine({
   memoryMiB: Number(params.get('mem')) || 512,
+  disk: params.get('disk') || 'opfs',          // opfs | mem | none
+  diskSizeMiB: Number(params.get('disksize')) || 256,
   cmdline: (params.get('cmdline') || 'console=ttyW0 rdinit=/init loglevel=7')
     + (params.get('mode') ? ` wasmfb.mode=${params.get('mode')}` : ''),
 });
