@@ -1,0 +1,11 @@
+[
+ [null, "weblinux:/# "],
+ [{"sleep": 4000}, ""],
+ [{"click": [40, 753]}, ""],
+ [{"sleep": 500}, ""],
+ [{"click": [60, 664]}, ""],
+ [{"sleep": 1000}, ""],
+ [{"paste": "10.0.2.2:@PORT@/test/page.html\n"}, ""],
+ [{"sleep": 12000}, ""],
+ ["ps | grep '[n]etsurf' | grep -c page.html", "1\r\n"]
+]

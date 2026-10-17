@@ -1095,6 +1095,90 @@ static void about_draw(struct win *w)
 
 static const struct app_ops about_ops = { .draw = about_draw };
 
+/* ---------------------------------------------------------------- prompt */
+
+struct prompt {
+	char label[64];
+	char text[512];
+	int len;
+	void (*done)(const char *text);
+};
+
+static void prompt_draw(struct win *w)
+{
+	struct prompt *p = w->priv;
+	int fw = w->w - 24, shown = fw / FONT_W - 1;
+	const char *t = p->text + (p->len > shown ? p->len - shown : 0);
+
+	fill(&w->surf, 0, 0, w->w, w->h, C_WIN_BG);
+	text(&w->surf, 12, 12, p->label, C_WIN_FG, w->w - 24);
+	fill(&w->surf, 12, 34, fw, FONT_H + 8, rgb(255, 255, 255));
+	frame(&w->surf, 12, 34, fw, FONT_H + 8, C_SEL);
+	int tw = text(&w->surf, 16, 38, t, C_WIN_FG, fw - 8);
+	fill(&w->surf, 16 + tw, 38, 2, FONT_H, C_SEL);
+	text(&w->surf, 12, w->h - 24, "Enter: open   Esc: cancel   Ctrl+U: clear", C_DIM, w->w - 24);
+}
+
+static void prompt_key(struct win *w, const struct key *k)
+{
+	struct prompt *p = w->priv;
+
+	if (k->code == KEY_ENTER || k->code == KEY_KPENTER) {
+		void (*done)(const char *) = p->done;
+		char text[sizeof(p->text)];
+		memcpy(text, p->text, sizeof(text));
+		w->dead = 1;
+		if (p->len)
+			done(text);
+		return;
+	}
+	if (k->code == KEY_ESC) {
+		w->dead = 1;
+		return;
+	}
+	if (k->code == KEY_BACKSPACE) {
+		if (p->len)
+			p->text[--p->len] = 0;
+	} else if ((k->mods & MOD_CTRL) && k->ch == 'u') {
+		p->len = 0;
+		p->text[0] = 0;
+	} else if (k->ch >= 32 && k->ch < 127 && !(k->mods & MOD_CTRL) &&
+		   p->len < (int)sizeof(p->text) - 1) {
+		p->text[p->len++] = k->ch;
+		p->text[p->len] = 0;
+	}
+	w->dirty = need_redraw = 1;
+}
+
+static void prompt_close(struct win *w)
+{
+	free(w->priv);
+}
+
+static const struct app_ops prompt_ops = { .draw = prompt_draw, .key = prompt_key, .close = prompt_close };
+
+static void open_prompt(const char *title, const char *label, const char *init,
+			void (*done)(const char *))
+{
+	struct prompt *p = calloc(1, sizeof(*p));
+	struct win *w;
+
+	if (!p)
+		return;
+	snprintf(p->label, sizeof(p->label), "%s", label);
+	snprintf(p->text, sizeof(p->text), "%s", init);
+	p->len = strlen(p->text);
+	p->done = done;
+	w = win_new(title, 480, 100, &prompt_ops);
+	if (!w) {
+		free(p);
+		return;
+	}
+	w->priv = p;
+	w->x = (screen.w - w->w) / 2;
+	w->y = (screen.h - w->h) / 3;
+}
+
 /* ---------------------------------------------------------------- fullscreen programs */
 
 static void run_fullscreen(char *const argv[])
@@ -1125,6 +1209,27 @@ static void m_browser(void)
 	else
 		open_terminal("echo 'The browser (NetSurf) is not installed yet.'; sleep 5");
 }
+static void browse(const char *url)
+{
+	static char u[600];
+	static char *argv[] = { "/usr/bin/netsurf", u, NULL };
+
+	char clean[512];
+	int n = 0;
+
+	/* URLs have no blanks; a bare host name gets http:// */
+	for (; *url && n < (int)sizeof(clean) - 1; url++)
+		if (*url != ' ' && *url != '\t')
+			clean[n++] = *url;
+	clean[n] = 0;
+	if (!n)
+		return;
+	snprintf(u, sizeof(u), "%s%s",
+		 strstr(clean, "://") || !strncmp(clean, "about:", 6) ? "" : "http://", clean);
+	if (access(argv[0], X_OK) == 0)
+		run_fullscreen(argv);
+}
+static void m_open_url(void) { open_prompt("Open web page", "Address (http:// is added if missing):", "", browse); }
 static void m_about(void) { win_new("About WebLinux", 340, 170, &about_ops); }
 static void m_console(void);
 
@@ -1133,6 +1238,7 @@ static const struct menu_item menu[] = {
 	{ "Files", icon_folder, m_files },
 	{ "Editor", icon_edit, m_editor },
 	{ "Web browser", icon_globe, m_browser },
+	{ "Open web page...", icon_globe, m_open_url },
 	{ "About", icon_file, m_about },
 	{ "Text console", icon_term, m_console },
 };

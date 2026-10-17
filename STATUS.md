@@ -174,14 +174,16 @@ Notes:
 1. Real internet use: run `node server.js` on a machine with internet and browse https sites in
    NetSurf (TLS via mbedTLS, DNS via the relay's resolver). Not testable from the cloud sandbox
    (no outbound access there). Check certificate validation and speed.
-2. NetSurf: Ctrl+U clears the URL bar (clicking does not select it); a URL prompt in the
-   desktop would help. Closing NetSurf returns to the desktop (test/browse.json).
+2. (done) Desktop menu "Open web page..." prompts for an address and starts NetSurf on it
+   (test/url.json). In NetSurf, Ctrl+U clears the URL bar. Closing NetSurf returns to the desktop.
 3. Performance (measured 2026-10-17, headless Chromium): pipe round trip between two processes
    86 us (`test/pingpong.c`), `$(echo)` subshell 1.3 ms, exec of BusyBox ~20 ms (the 1.2 MB
    module is compiled on every exec: cache compiled modules per file in JS). Boot ~4 s incl.
    formatting a new disk. The desktop's full redraw is 4 ms.
-4. Desktop polish: clipboard with the host, terminal selection/scrollback, time zone from the
-   browser, wallpaper/settings, an app launcher entry per installed program.
+4. Desktop polish: (done) paste from the host with Ctrl+Shift+V (test/paste.json), copy by
+   selecting in the terminal (OSC 52 on ttyW0 -> navigator.clipboard, test/copy.json), 1000
+   lines of scrollback (wheel, Shift+PgUp), TZ from the browser. Still open: copy/paste in the
+   editor and NetSurf, wallpaper/settings, a launcher entry per installed program.
 5. (done) sync on hidden/pagehide, Reset disk and Full screen buttons, start.bat/start.sh.
 6. Size: initramfs is 13.7 MB (5.4 MB gzipped by server.js); NetSurf is 6.5 MB.
 7. Keep README.md's status list current.
