@@ -1,10 +1,10 @@
 #!/bin/sh
-# Cross-build GNU bash for WebLinux (run inside MSYS2: m < build-bash.sh).
+# Cross-build GNU bash for WebLinux (MSYS2: m < build-bash.sh; Linux: sh build/build-bash.sh).
 # fork() works through Asyncify (WASM_FORK=1 in wasm-cc).
 set -e
-. /wl/build/env.sh
-SRC=/wl/src/bash-5.3
-OUT=/wl/build/obj/bash
+. "${W:-/wl}/build/env.sh"
+SRC=$W/src/bash-5.3
+OUT=$W/build/obj/bash
 mkdir -p $OUT
 cd $OUT
 
@@ -22,9 +22,9 @@ if [ ! -f Makefile ]; then
 	ac_cv_func_mmap_fixed_mapped=no ac_cv_rl_version=8.3 \
 	gt_cv_int_divbyzero_sigfpe=no
 
-	CC="bash /wl/build/wasm-cc" CC_FOR_BUILD="/usr/bin/gcc -std=gnu17" \
+	CC="bash $W/build/wasm-cc" CC_FOR_BUILD="/usr/bin/gcc -std=gnu17" \
 	AR=llvm-ar RANLIB=llvm-ranlib CFLAGS="-O2" \
-	$SRC/configure --host=wasm32-unknown-linux-musl --build=x86_64-pc-cygwin \
+	$SRC/configure --host=wasm32-unknown-linux-musl --build=$(sh $SRC/support/config.guess) \
 		--prefix=/usr --without-bash-malloc --disable-nls --with-curses=no \
 		--enable-readline --enable-job-control > configure.log 2>&1 \
 		|| { tail -30 configure.log; exit 1; }

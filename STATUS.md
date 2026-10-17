@@ -45,6 +45,21 @@ and applies `patches/linux/` (see CLAUDE.md).
 - `rootfs-test/` + `test/test.manifest`: the current test initramfs. `/init` is a bash script; `/bin/bash`, `/bin/forktest`.
 - `test/`: small test programs (`hello.c`, `hello2.c`, `forktest.c`, asyncify tests).
 
+## Toolchain (Linux / cloud sessions)
+- `sh build/setup-linux.sh` installs clang/lld/llvm 20 (apt), binaryen 132, node 24 and
+  playwright (npm, into `/opt/wltools`), links `/wl` to the checkout and writes
+  `/opt/wltools/env`. Then `. /opt/wltools/env` (PATH, `W=/wl`, `SYSROOT=/opt/wltools/sysroot`).
+- kernel.org, gnu.org, busybox.net and most of GitHub are blocked from the cloud proxy;
+  `fetch-sources.sh` falls back to Ubuntu's source pool and the gregkh/linux git mirror.
+- `cd /wl/linux && sh /wl/build/kmake.sh wasm_defconfig && sh /wl/build/kmake.sh -j8 vmlinux.wasm`
+  (about 1 minute), `cp vmlinux.wasm /wl/public/`.
+- `sh build/build-libc.sh`: UAPI headers, musl (port-musl.py, configure, make) and
+  compiler-rt builtins into `$SYSROOT`. `sh build/build-bash.sh`.
+- `node build/mkinitramfs.js rootfs-test test/test.manifest public/initramfs.cpio`.
+- Boot test: `NODE_PATH=/opt/wltools/node_modules node test/boot-test.mjs [steps.json] [--log f]`
+  boots the page in headless Chromium and checks bash runs a pipeline.
+- LLVM 20 crashes on asm `.set` aliases in wasm objects (kernel patch 0004 avoids them).
+
 ## Toolchain (Windows, no WSL/Docker, virtualization disabled in BIOS)
 - MSYS2 lives at `C:\Users\dynam\wltools\msys64`, with LLVM 23 (CLANG64) and Binaryen 133 (`wasm-opt`).
 - Run commands in MSYS2 from Git Bash with `/c/Users/dynam/wltools/m <<'X' ... X`, or `m < script.sh`.

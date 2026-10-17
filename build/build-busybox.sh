@@ -1,12 +1,12 @@
 #!/bin/sh
 # Cross-build BusyBox utilities for WebLinux (run inside MSYS2).
 # NOMMU mode (vfork + exec), no shells: bash is the shell.
-. /wl/build/env.sh
-SRC=/wl/src/busybox-1.37.0
-[ -d $SRC ] || (cd /wl/src && tar xjf /c/Users/dynam/wltools/dl/busybox-1.37.0.tar.bz2)
+. "${W:-/wl}/build/env.sh"
+SRC=$W/src/busybox-1.37.0
+[ -d $SRC ] || { echo "run build/fetch-sources.sh first"; exit 1; }
 cd $SRC
 
-BBMAKE="make CC=bash\ /wl/build/wasm-cc HOSTCC=/usr/bin/gcc HOSTCFLAGS=-std=gnu17 LD=/wl/build/wasm-ld-r AR=llvm-ar STRIP=true"
+BBMAKE="make CC=bash\ $W/build/wasm-cc HOSTCC=/usr/bin/gcc HOSTCFLAGS=-std=gnu17 LD=$W/build/wasm-ld-r AR=llvm-ar STRIP=true"
 
 if [ ! -f .config ]; then
 	eval $BBMAKE defconfig > /dev/null

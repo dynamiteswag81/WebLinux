@@ -1,0 +1,28 @@
+From 26f08d799a377e9ee81ff3d6f7d0f88bc7f25e95 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 17 Oct 2026 17:36:24 +0000
+Subject: [PATCH 4/4] wasm: drop compat cond_syscall aliases (crash LLVM 20's
+ wasm writer)
+
+---
+ arch/wasm/include/asm/syscall_wrapper.h | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/arch/wasm/include/asm/syscall_wrapper.h b/arch/wasm/include/asm/syscall_wrapper.h
+index fc6cd64b3..d788156b7 100644
+--- a/arch/wasm/include/asm/syscall_wrapper.h
++++ b/arch/wasm/include/asm/syscall_wrapper.h
+@@ -70,4 +70,10 @@
+ 		return sys_ni_syscall();				\
+ 	}
+ 
++/*
++ * No compat syscalls on wasm.  The generic fallback is an asm ".set" alias,
++ * which LLVM 20's wasm object writer crashes on.
++ */
++#define COND_SYSCALL_COMPAT(name)
++
+ #endif
+-- 
+2.43.0
+

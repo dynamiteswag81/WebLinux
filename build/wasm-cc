@@ -8,9 +8,9 @@
 # Behaves like a gcc cross compiler: any of -c/-S/-E/-M compiles, anything
 # else links.  Linker flags meant for ELF linkers are dropped.
 
-. /wl/build/env.sh
+. "$(dirname "$0")/env.sh"
 
-RES="${WASM_CC_RESDIR:-C:/Users/dynam/wltools/msys64/clang64/lib/clang/23}"
+RES="${WASM_CC_RESDIR:-$(clang -print-resource-dir)}"
 COMMON=($WASM_ARCH_FLAGS -fPIC -D__linux__ -D__linux -Dlinux -D__unix__ -D__unix -Dunix
 	-D__gnu_linux__ -nostdinc -isystem "$SYSROOT/include" -isystem "$RES/include"
 	-Wno-unused-command-line-argument)
