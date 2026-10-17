@@ -10,7 +10,7 @@
 // device, frame buffer console); {"sleep": ms} just waits; {"reload": 1}
 // reloads the page (a new boot, same browser storage); {"click": [x, y]}
 // clicks on the canvas at frame buffer coordinates ("double": true for a
-// double click); {"button": "id"} clicks a page button (dialogs are
+// double click; "wheel": dy scrolls there instead); {"button": "id"} clicks a page button (dialogs are
 // accepted; a reload it causes restarts the output).  --shot saves a
 // screenshot of the canvas at the end.  @PORT@ in an input becomes the
 // page server's port (reachable from the guest as 10.0.2.2).  The default checks that
@@ -74,7 +74,8 @@ try {
       const sc = Math.min(geo.w / geo.cw, geo.h / geo.ch);
       const x = geo.l + (geo.w - geo.cw * sc) / 2 + cx * sc, y = geo.t + (geo.h - geo.ch * sc) / 2 + cy * sc;
       await page.mouse.move(x, y, { steps: 4 });
-      await page.mouse.click(x, y, { clickCount: input.double ? 2 : 1 });
+      if (input.wheel) await page.mouse.wheel(0, input.wheel);
+      else await page.mouse.click(x, y, { clickCount: input.double ? 2 : 1 });
     } else if (input && input.button) {
       // a button of the page; it may reload the page
       const nav = page.waitForNavigation({ timeout: TIMEOUT }).catch(() => null);

@@ -32,6 +32,10 @@ struct term {
 	/* UTF-8 decoder */
 	uint32_t uc;
 	int ulen;
+	/* scrollback: lines that scrolled off the top of the main screen */
+	struct cell *hist;		/* hist_cap rows of cols cells, a ring */
+	int hist_cap, hist_len, hist_head;
+	int view;			/* rows scrolled back, 0 = live */
 	int dirty;
 	/* bytes the terminal answers with (device status reports) */
 	char reply[64];
@@ -44,5 +48,8 @@ int term_init(struct term *t, int cols, int rows);
 void term_free(struct term *t);
 int term_resize(struct term *t, int cols, int rows);
 void term_write(struct term *t, const unsigned char *buf, int n);
+/* the cell shown at (x, y) with the view scrolled back t->view rows */
+const struct cell *term_view_cell(const struct term *t, int x, int y);
+void term_scroll_view(struct term *t, int rows);
 
 #endif

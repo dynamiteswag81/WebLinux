@@ -43,10 +43,14 @@ int term_init(struct term *t, int cols, int rows)
 	return term_resize(t, cols, rows);
 }
 
+#define HIST_LINES 1000
+
 void term_free(struct term *t)
 {
 	free(t->cells);
 	free(t->alt);
+	free(t->hist);
+	t->hist = NULL;
 	t->cells = t->alt = NULL;
 }
 
@@ -76,6 +80,11 @@ int term_resize(struct term *t, int cols, int rows)
 	t->cells = c;
 	t->alt = a;
 	t->using_alt = 0;
+	/* the scrollback keeps whole rows: start it over at the new width */
+	free(t->hist);
+	t->hist = malloc(sizeof(struct cell) * cols * HIST_LINES);
+	t->hist_cap = t->hist ? HIST_LINES : 0;
+	t->hist_len = t->hist_head = t->view = 0;
 	t->cols = cols;
 	t->rows = rows;
 	t->top = 0;
@@ -92,6 +101,18 @@ static void scroll_up(struct term *t, int top, int bot, int n)
 {
 	if (n > bot - top + 1)
 		n = bot - top + 1;
+	/* rows leaving the top of the main screen go to the scrollback */
+	for (int i = 0; top == 0 && !t->using_alt && t->hist_cap && i < n; i++) {
+		memcpy(t->hist + (size_t)t->hist_head * t->cols, at(t, 0, i),
+		       sizeof(struct cell) * t->cols);
+		t->hist_head = (t->hist_head + 1) % t->hist_cap;
+		if (t->hist_len < t->hist_cap) {
+			t->hist_len++;
+			/* keep a scrolled-back view on the same lines */
+			if (t->view)
+				t->view++;
+		}
+	}
 	memmove(at(t, 0, top), at(t, 0, top + n), sizeof(struct cell) * t->cols * (bot - top + 1 - n));
 	clear_cells(t, (bot - n + 1) * t->cols, (bot + 1) * t->cols);
 }
@@ -314,6 +335,31 @@ static void csi(struct term *t, unsigned char c)
 		if (!t->priv)
 			reply(t, "\033[?6c");
 		break;
+	}
+}
+
+const struct cell *term_view_cell(const struct term *t, int x, int y)
+{
+	int line = y - t->view;
+
+	if (line >= 0)
+		return &t->cells[line * t->cols + x];
+	/* history: -1 is the newest line */
+	int i = (t->hist_head + line + t->hist_cap) % t->hist_cap;
+	return &t->hist[(size_t)i * t->cols + x];
+}
+
+void term_scroll_view(struct term *t, int rows)
+{
+	int v = t->view + rows;
+
+	if (v < 0)
+		v = 0;
+	if (v > t->hist_len)
+		v = t->hist_len;
+	if (v != t->view) {
+		t->view = v;
+		t->dirty = 1;
 	}
 }
 

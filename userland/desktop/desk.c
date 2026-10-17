@@ -254,7 +254,7 @@ static void term_draw(struct win *w)
 	fill(&w->surf, 0, 0, w->w, w->h, term_palette[0]);
 	for (int y = 0; y < t->rows; y++) {
 		for (int x = 0; x < t->cols; x++) {
-			struct cell c = t->cells[y * t->cols + x];
+			struct cell c = *term_view_cell(t, x, y);
 			int fg = c.fg, bg = c.bg;
 			if ((c.attr & ATTR_BOLD) && fg < 8)
 				fg += 8;
@@ -263,7 +263,7 @@ static void term_draw(struct win *w)
 				fg = bg;
 				bg = tmp;
 			}
-			if (x == t->cx && y == t->cy && t->cursor_on && has_focus) {
+			if (x == t->cx && y == t->cy + t->view && t->cursor_on && has_focus) {
 				int tmp = fg;
 				fg = bg;
 				bg = tmp == bg ? 7 : tmp;
@@ -275,9 +275,16 @@ static void term_draw(struct win *w)
 				     term_palette[fg]);
 		}
 	}
-	if (!has_focus && t->cursor_on)
-		frame(&w->surf, 2 + t->cx * FONT_W, 2 + t->cy * FONT_H, FONT_W, FONT_H,
+	if (!has_focus && t->cursor_on && t->cy + t->view < t->rows)
+		frame(&w->surf, 2 + t->cx * FONT_W, 2 + (t->cy + t->view) * FONT_H, FONT_W, FONT_H,
 		      term_palette[7]);
+	if (t->view) {
+		char info[32];
+		snprintf(info, sizeof(info), " scrolled back %d ", t->view);
+		int iw = strlen(info) * FONT_W;
+		fill(&w->surf, w->w - iw - 4, 2, iw, FONT_H, term_palette[4]);
+		text(&w->surf, w->w - iw - 4, 2, info, term_palette[15], 0);
+	}
 }
 
 static void term_send(struct termapp *a, const char *s, int n)
@@ -297,6 +304,17 @@ static void term_key(struct win *w, const struct key *k)
 	const char *seq = NULL;
 	char buf[8];
 	int app = a->t.app_cursor;
+
+	/* Shift+PageUp/PageDown scroll back; any other key returns to live */
+	if ((k->mods & MOD_SHIFT) && (k->code == KEY_PAGEUP || k->code == KEY_PAGEDOWN)) {
+		term_scroll_view(&a->t, (k->code == KEY_PAGEUP ? 1 : -1) * (a->t.rows - 1));
+		w->dirty = need_redraw = 1;
+		return;
+	}
+	if (a->t.view && k->code != KEY_LEFTSHIFT && k->code != KEY_RIGHTSHIFT) {
+		term_scroll_view(&a->t, -a->t.view);
+		w->dirty = need_redraw = 1;
+	}
 
 	switch (k->code) {
 	case KEY_UP: seq = app ? "\033OA" : "\033[A"; break;
@@ -387,8 +405,18 @@ static void term_close(struct win *w)
 	free(a);
 }
 
+static void term_mouse(struct win *w, int x, int y, int ev, int arg)
+{
+	struct termapp *a = w->priv;
+
+	if (ev == M_WHEEL && !a->t.using_alt) {
+		term_scroll_view(&a->t, arg * 3);
+		w->dirty = need_redraw = 1;
+	}
+}
+
 static const struct app_ops term_ops = {
-	.draw = term_draw, .key = term_key, .io = term_io,
+	.draw = term_draw, .key = term_key, .io = term_io, .mouse = term_mouse,
 	.resized = term_resized, .close = term_close,
 };
 
