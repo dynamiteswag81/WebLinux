@@ -1,0 +1,13 @@
+--- a/netsurf/utils/config.h
++++ b/netsurf/utils/config.h
+@@ -139,6 +139,10 @@
+ #if (defined(_WIN32) || defined(__riscos__) || defined(__HAIKU__) || defined(__BEOS__) || defined(__amigaos4__) || defined(__AMIGA__) || defined(__MINT__))
+ #undef HAVE_MMAP
+ #endif
++/* WebLinux has no MMU: MAP_SHARED of regular files is not possible */
++#if defined(__wasm__)
++#undef HAVE_MMAP
++#endif
+ 
+ #define HAVE_SCANDIR
+ #if (defined(_WIN32) ||				\

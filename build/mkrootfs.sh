@@ -15,6 +15,19 @@ bash $W/build/wasm-cc -O2 -Wall $W/userland/init.c -o $R/sbin/init
 cp $W/build/obj/bash/bash $R/bin/bash
 cp $BB/busybox_unstripped $R/bin/busybox
 [ ! -f $W/build/obj/desktop/wldesk ] || cp $W/build/obj/desktop/wldesk $R/usr/bin/
+NSO=$W/build/obj/netsurf
+if [ -f $NSO/netsurf ]; then
+	cp $NSO/netsurf $R/usr/bin/netsurf
+	mkdir -p $R/usr/share/netsurf
+	cp $NSO/install/usr/share/netsurf/* $R/usr/share/netsurf/
+	cp $W/rootfs/usr/share/netsurf/Choices $R/usr/share/netsurf/
+fi
+[ ! -f $NSO/curl/src/curl ] || cp $NSO/curl/src/curl $R/usr/bin/curl
+# root certificates for HTTPS (Mozilla's set, from the build machine)
+if [ -d /usr/share/ca-certificates/mozilla ]; then
+	mkdir -p $R/etc/ssl/certs
+	cat /usr/share/ca-certificates/mozilla/*.crt > $R/etc/ssl/certs/ca-certificates.crt
+fi
 [ -z "$ROOTFS_EXTRA" ] || cp $ROOTFS_EXTRA $R/bin/
 
 M=$W/build/obj/rootfs.manifest

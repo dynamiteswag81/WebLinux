@@ -63,6 +63,26 @@ if [ ! -d src/busybox-1.37.0 ]; then
 	tar xjf "$DL/busybox-1.37.0.tar.bz2" -C src
 fi
 
+# NetSurf (all its libraries in one tree) and the libraries it needs.
+# Only Ubuntu's pool is used: the upstream hosts are not reachable from the
+# cloud sessions and the tarballs are the upstream ones.
+pool() {	# pool PATH DIR: fetch $UBU/PATH and unpack it as src/DIR
+	[ -d "src/$2" ] && return 0
+	f=$(basename "$1")
+	[ -f "$DL/$f" ] || curl -fL --retry 3 -o "$DL/$f" "$UBU/$1"
+	mkdir -p "src/$2.tmp"
+	tar xf "$DL/$f" -C "src/$2.tmp"
+	mv "src/$2.tmp/"* "src/$2"
+	rmdir "src/$2.tmp"
+}
+pool universe/n/netsurf/netsurf_3.11.orig.tar.gz netsurf-all-3.11
+pool main/z/zlib/zlib_1.3.dfsg.orig.tar.xz zlib
+pool universe/m/mbedtls/mbedtls_3.6.7.orig.tar.bz2 mbedtls
+pool main/c/curl/curl_8.20.0.orig.tar.gz curl
+pool main/libp/libpng1.6/libpng1.6_1.6.59.orig.tar.gz libpng
+pool main/libj/libjpeg-turbo/libjpeg-turbo_3.1.3.orig.tar.gz libjpeg-turbo
+pool main/e/expat/expat_2.8.3.orig.tar.gz expat
+
 # compiler-rt builtins (sparse llvm-project checkout, pinned)
 if [ ! -d src/llvm-rt ]; then
 	git clone -q --filter=blob:none --sparse --no-checkout \

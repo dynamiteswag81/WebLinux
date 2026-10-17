@@ -6,8 +6,8 @@
 set -e
 T=${WLTOOLS:-/opt/wltools}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-{ command -v clang-20 && command -v flex && command -v bison; } >/dev/null ||
-	{ apt-get update -q && DEBIAN_FRONTEND=noninteractive apt-get install -y -q clang-20 lld-20 llvm-20 flex bison bc make gcc g++ rsync cpio; }
+{ command -v clang-20 && command -v flex && command -v gperf; } >/dev/null ||
+	{ apt-get update -q && DEBIAN_FRONTEND=noninteractive apt-get install -y -q clang-20 lld-20 llvm-20 flex bison bc make gcc g++ rsync cpio gperf cmake perl pkg-config; }
 mkdir -p "$T/sysroot/lib" "$T/sysroot/include"
 [ -d "$T/node_modules/playwright" ] || npm install -s --prefix "$T" node@24 binaryen@132 playwright@1.56.1
 [ -e /wl ] || ln -s "$ROOT" /wl

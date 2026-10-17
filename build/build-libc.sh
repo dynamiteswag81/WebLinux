@@ -25,7 +25,7 @@ make -j${JOBS:-8} lib/libc.a lib/crt1.o > $LOG/musl.log 2>&1 ||
 make install-headers > /dev/null
 cp lib/libc.a lib/crt1.o "$SYSROOT/lib/"
 # musl keeps libm, libpthread, ... inside libc.a; -lm etc. get empty stubs
-for l in m rt pthread crypt util xnet resolv dl; do
+for l in m rt pthread crypt util xnet resolv dl iconv intl; do
 	rm -f "$SYSROOT/lib/lib$l.a"; llvm-ar rc "$SYSROOT/lib/lib$l.a"
 done
 
