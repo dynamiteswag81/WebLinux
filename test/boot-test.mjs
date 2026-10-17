@@ -10,7 +10,8 @@
 // device, frame buffer console); {"sleep": ms} just waits; {"reload": 1}
 // reloads the page (a new boot, same browser storage); {"click": [x, y]}
 // clicks on the canvas at frame buffer coordinates ("double": true for a
-// double click).  --shot saves a
+// double click); {"button": "id"} clicks a page button (dialogs are
+// accepted; a reload it causes restarts the output).  --shot saves a
 // screenshot of the canvas at the end.  @PORT@ in an input becomes the
 // page server's port (reachable from the guest as 10.0.2.2).  The default checks that
 // bash comes up and runs a pipeline.
@@ -46,8 +47,9 @@ try {
   page = await browser.newPage({ viewport: { width: 1100, height: 850 } });
   page.on('pageerror', (e) => { out += `\n[pageerror] ${e.message}\n`; });
   await new Promise((r) => setTimeout(r, 300));
-  await page.goto(`http://127.0.0.1:${PORT}/`);
-  const hook = () => page.evaluate(() => {
+  page.on('dialog', (d) => d.accept());
+  // collect the console output on every (re)load of the page
+  await page.addInitScript(() => {
     self.__out = '';
     const hook = () => {
       if (!self.machine) return setTimeout(hook, 5);
@@ -55,7 +57,7 @@ try {
     };
     hook();
   });
-  await hook();
+  await page.goto(`http://127.0.0.1:${PORT}/`);
   let from = 0;
   for (const [input, expect] of steps) {
     if (input && input.kbd !== undefined) {
@@ -73,9 +75,14 @@ try {
       const x = geo.l + (geo.w - geo.cw * sc) / 2 + cx * sc, y = geo.t + (geo.h - geo.ch * sc) / 2 + cy * sc;
       await page.mouse.move(x, y, { steps: 4 });
       await page.mouse.click(x, y, { clickCount: input.double ? 2 : 1 });
+    } else if (input && input.button) {
+      // a button of the page; it may reload the page
+      const nav = page.waitForNavigation({ timeout: TIMEOUT }).catch(() => null);
+      await page.click('#' + input.button);
+      if (input.reloads !== false) await nav;
+      from = 0;
     } else if (input && input.reload) {
       await page.reload();
-      await hook();
       from = 0;
     } else if (input && input.sleep) {
       await new Promise((r) => setTimeout(r, input.sleep));
@@ -85,7 +92,7 @@ try {
     }
     const t0 = Date.now();
     for (;;) {
-      out = await page.evaluate(() => self.__out);
+      out = await page.evaluate(() => self.__out || '').catch(() => out);
       const i = out.indexOf(expect, from);
       if (i >= 0) { from = i + expect.length; break; }
       if (Date.now() - t0 > TIMEOUT) throw new Error(`timed out waiting for ${JSON.stringify(expect)}`);

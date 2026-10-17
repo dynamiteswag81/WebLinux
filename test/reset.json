@@ -1,0 +1,7 @@
+[
+ [null, "weblinux:/# "],
+ ["echo keep > /root/r; sync; echo s$((1+1))", "s2"],
+ [{"button": "btn-reset"}, "formatting the new disk"],
+ [null, "weblinux:/# "],
+ ["ls /root/r || echo gone-$((2+2))", "gone-4"]
+]

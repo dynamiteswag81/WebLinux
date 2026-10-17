@@ -66,6 +66,28 @@ $('cons').addEventListener('submit', (e) => {
   machine.consoleInput(v + '\n');
 });
 $('btn-log').addEventListener('click', () => $('bootlog').classList.toggle('hidden'));
+$('btn-full').addEventListener('click', () => {
+  document.documentElement.requestFullscreen?.().then(() => $('screen').focus(), () => {});
+});
+$('btn-reset').addEventListener('click', async () => {
+  if (!confirm('Erase the saved disk (all your files) and restart?')) return;
+  machine.halt(0);
+  status.textContent = 'erasing…';
+  try {
+    const root = await navigator.storage.getDirectory();
+    // the disk worker just stopped: its file handle closes asynchronously
+    for (let i = 0; ; i++) {
+      try { await root.removeEntry(machine.disk.name); break; } catch (e) {
+        if (e.name === 'NotFoundError') break;
+        if (i > 50) throw e;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+    }
+  } catch (e) {
+    appendLog(`reset: ${e.message}\n`);
+  }
+  location.reload();
+});
 
 // the tab may be closed soon after it is hidden: write the disk out
 document.addEventListener('visibilitychange', () => {
