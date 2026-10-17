@@ -28,6 +28,9 @@ if [ ! -f Makefile ]; then
 		--prefix=/usr --without-bash-malloc --disable-nls --with-curses=no \
 		--enable-readline --enable-job-control > configure.log 2>&1 \
 		|| { tail -30 configure.log; exit 1; }
+	# PGRP_PIPE makes a job's first child wait on a pipe until the parent
+	# has run; our fork() runs the child until it execs, so that deadlocks.
+	sed -i 's|^#define PGRP_PIPE 1|/* #undef PGRP_PIPE (WebLinux fork) */|' config.h
 fi
 
 WASM_FORK=1 make -j16 > make.log 2>&1 || { grep -E 'error|Error' make.log | head -30; exit 1; }

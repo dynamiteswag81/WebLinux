@@ -36,9 +36,9 @@ for a in "$@"; do
 		for p in "${parts[@]}"; do
 			if [ $drop_next = 1 ]; then drop_next=0; continue; fi
 			case "$p" in
-			-z) drop_next=1 ;;
+			-z|-Map) drop_next=1 ;;
 			--sort-common|--sort-section*|--gc-sections|--warn-common|--start-group|--end-group|\
-			-Map*|-Map=*|--verbose|-O*|--as-needed|--no-as-needed|--hash-style*|--build-id*|\
+			-Map=*|--verbose|-O*|--as-needed|--no-as-needed|--hash-style*|--build-id*|\
 			-static|--no-undefined|-rpath*|--rpath*|-soname*|--exclude-libs*|-E|--export-dynamic|\
 			--dynamic-list*|--version-script*|--fatal-warnings|-Bstatic|-Bdynamic) ;;
 			*) args+=("-Wl,$p") ;;
@@ -51,9 +51,12 @@ for a in "$@"; do
 	esac
 done
 
+# crt1 only references main weakly, so -u pulls main(argc, argv) out of an
+# archive (BusyBox keeps it in libbb/lib.a).
 clang "${COMMON[@]}" -nostdlib -fuse-ld=lld \
 	-Wl,-pie,--experimental-pic,--import-memory,--shared-memory \
 	-Wl,--max-memory=4294967296,--no-entry,--export=_start,--export=__c_longjmp \
+	-Wl,-u,__main_argc_argv \
 	"$SYSROOT/lib/crt1.o" "${args[@]}" \
 	-L"$SYSROOT/lib" -lc "$SYSROOT/lib/libclang_rt.builtins-wasm32.a" || exit $?
 

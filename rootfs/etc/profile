@@ -1,0 +1,5 @@
+# /etc/profile: login shell setup
+export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+export HOME=${HOME:-/root} TERM=${TERM:-dumb} PAGER=less
+[ "$PS1" ] && PS1='\u@\h:\w\$ '
+[ -r /etc/bash.bashrc ] && . /etc/bash.bashrc

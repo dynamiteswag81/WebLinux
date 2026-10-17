@@ -1,0 +1,3 @@
+# /etc/rc: run once by /sbin/init after the virtual file systems are up
+hostname -F /etc/hostname
+echo "WebLinux $(uname -r): BusyBox $(busybox 2>&1 | head -1 | cut -d' ' -f2), bash $BASH_VERSION"

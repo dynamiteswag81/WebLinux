@@ -1,4 +1,0 @@
-#!/bin/bash
-echo "WebLinux: bash $BASH_VERSION running as init"
-export PATH=/bin HOME=/ TERM=dumb PS1="\u@weblinux:\w\$ "
-exec /bin/bash -i

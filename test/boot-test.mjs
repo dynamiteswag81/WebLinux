@@ -21,8 +21,7 @@ const args = process.argv.slice(2);
 const li = args.indexOf('--log');
 const logFile = li >= 0 ? args.splice(li, 2)[1] : null;
 const steps = args[0] ? JSON.parse(fs.readFileSync(args[0], 'utf8')) : [
-  [null, 'running as init'],
-  [null, '$ '],
+  [null, 'weblinux:/# '],
   ['echo $((6*7)) | { read x; echo got$x; }', 'got42'],
 ];
 const TIMEOUT = Number(process.env.STEP_TIMEOUT || 60) * 1000;

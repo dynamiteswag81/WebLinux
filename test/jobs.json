@@ -1,0 +1,54 @@
+[
+ [
+  null,
+  "bash 5.3"
+ ],
+ [
+  null,
+  "weblinux:/# "
+ ],
+ [
+  "tty; ls /bin | wc -l",
+  "/dev/ttyW0"
+ ],
+ [
+  "sleep 30 & jobs",
+  "Running"
+ ],
+ [
+  "kill %1; sleep 1; jobs",
+  "Terminated"
+ ],
+ [
+  "cat /proc/self/stat | cut -d' ' -f1-8",
+  ") R"
+ ],
+ [
+  "sleep 20",
+  "sleep 20\r\n"
+ ],
+ [
+  "\u0003echo intr-ok",
+  "intr-ok"
+ ],
+ [
+  "sleep 21",
+  "sleep 21\r\n"
+ ],
+ [
+  "\u001a",
+  "Stopped"
+ ],
+ [
+  "bg; jobs",
+  "Running"
+ ],
+ [
+  "kill %1; echo after-kill",
+  "after-kill"
+ ],
+ [
+  "echo done-$((1+1))",
+  "done-2"
+ ]
+]

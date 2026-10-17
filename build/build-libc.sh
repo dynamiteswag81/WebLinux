@@ -24,6 +24,10 @@ make -j${JOBS:-8} lib/libc.a lib/crt1.o > $LOG/musl.log 2>&1 ||
 	{ grep -E 'error:|Error [0-9]' $LOG/musl.log | head -30; exit 1; }
 make install-headers > /dev/null
 cp lib/libc.a lib/crt1.o "$SYSROOT/lib/"
+# musl keeps libm, libpthread, ... inside libc.a; -lm etc. get empty stubs
+for l in m rt pthread crypt util xnet resolv dl; do
+	rm -f "$SYSROOT/lib/lib$l.a"; llvm-ar rc "$SYSROOT/lib/lib$l.a"
+done
 
 # compiler-rt builtins: every portable C file that builds for wasm32
 B=$W/src/llvm-rt/compiler-rt/lib/builtins
