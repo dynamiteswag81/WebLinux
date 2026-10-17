@@ -1,0 +1,5 @@
+[
+ [null, "weblinux:/# "],
+ ["wget -q -O /tmp/ca.crt http://10.0.2.2:@PORT@/test/tls-test.crt; curl -sS --cacert /tmp/ca.crt https://secure.test:@TLSPORT@/ok", "hello over TLS: /ok"],
+ ["curl -sS https://secure.test:@TLSPORT@/ 2>&1 | grep -ci 'certificate'", "\n1"]
+]

@@ -15,7 +15,8 @@
 // (or a list) presses keys on the canvas.  --shot saves a
 // screenshot of the canvas at the end.  @PORT@ in an input becomes the
 // page server's port (reachable from the guest as 10.0.2.2); names under
-// .test resolve to 10.0.2.2 (a fake DNS server behind the relay).  The default checks that
+// .test resolve to 10.0.2.2 (a fake DNS server behind the relay); @TLSPORT@
+// is an HTTPS server for secure.test whose certificate is /test/tls-test.crt.  The default checks that
 // bash comes up and runs a pipeline.
 
 import { spawn } from 'child_process';
@@ -58,6 +59,24 @@ dns.on('message', (q, from) => {
   dns.send(r, from.port, from.address);
 });
 await new Promise((r) => dns.bind(0, '127.0.0.1', r));
+
+// an HTTPS server with a throwaway certificate for secure.test; the
+// certificate is served as /test/tls-test.crt so the guest can trust it
+let tls = null;
+try {
+  const { execFileSync } = await import('child_process');
+  const https = await import('https');
+  const os = await import('os');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wltls-'));
+  execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', `${dir}/k`,
+    '-out', `${dir}/c`, '-subj', '/CN=secure.test', '-addext', 'subjectAltName=DNS:secure.test',
+    '-days', '2'], { stdio: 'ignore' });
+  fs.copyFileSync(`${dir}/c`, path.join(ROOT, 'public/test/tls-test.crt'));
+  tls = https.createServer({ key: fs.readFileSync(`${dir}/k`), cert: fs.readFileSync(`${dir}/c`) },
+    (req, res) => res.end(`hello over TLS: ${req.url}\n`));
+  await new Promise((r) => tls.listen(0, '127.0.0.1', r));
+} catch (e) { tls = null; }
+const TLSPORT = tls ? tls.address().port : 0;
 
 const server = spawn(process.execPath, [path.join(ROOT, 'server.js'), String(PORT)],
   { stdio: 'ignore', env: { ...process.env, WEBLINUX_DNS: `127.0.0.1:${dns.address().port}` } });
@@ -137,7 +156,7 @@ try {
     } else if (input && input.sleep) {
       await new Promise((r) => setTimeout(r, input.sleep));
     } else if (input !== null) {
-      const text = input.replaceAll('@PORT@', String(PORT));
+      const text = input.replaceAll('@PORT@', String(PORT)).replaceAll('@TLSPORT@', String(TLSPORT));
       await page.evaluate((s) => self.machine.consoleInput(s + '\n'), text);
     }
     const t0 = Date.now();
@@ -160,5 +179,6 @@ try {
   await browser.close();
   server.kill();
   dns.close();
+  if (tls) tls.close();
 }
 process.exit(ok ? 0 : 1);

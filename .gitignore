@@ -8,3 +8,4 @@
 node_modules/
 __pycache__/
 *_save.json
+public/test/tls-test.crt
