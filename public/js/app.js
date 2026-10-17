@@ -27,6 +27,7 @@ const machine = new Machine({
 });
 self.machine = machine; // handy from devtools
 const screen = new Screen(machine, $('screen'));
+self.wlscreen = screen; // handy from devtools and tests
 const audio = new Audio(machine);
 self.audio = audio;
 // once the frame buffer is up, the canvas is the main console

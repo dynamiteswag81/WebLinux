@@ -39,3 +39,20 @@ export function isShifted(code, key) {
   if (SHIFTED[code] === key) return true;
   return code.startsWith('Key') && key.length === 1 && key >= 'A' && key <= 'Z';
 }
+
+// US layout: character -> [KeyboardEvent.code, shift], for typing pasted text
+const UNSHIFTED = {
+  Minus: '-', Equal: '=', BracketLeft: '[', BracketRight: ']', Backslash: '\\',
+  Semicolon: ';', Quote: "'", Backquote: '`', Comma: ',', Period: '.', Slash: '/',
+  Space: ' ', Enter: '\n', Tab: '\t',
+};
+const CHARS = new Map();
+for (let i = 0; i < 26; i++) {
+  const l = String.fromCharCode(97 + i), code = 'Key' + l.toUpperCase();
+  CHARS.set(l, [code, false]);
+  CHARS.set(l.toUpperCase(), [code, true]);
+}
+for (let d = 0; d < 10; d++) CHARS.set(String(d), ['Digit' + d, false]);
+for (const [code, ch] of Object.entries(UNSHIFTED)) CHARS.set(ch, [code, false]);
+for (const [code, ch] of Object.entries(SHIFTED)) CHARS.set(ch, [code, true]);
+export function charKey(ch) { return CHARS.get(ch === '\r' ? '\n' : ch); }

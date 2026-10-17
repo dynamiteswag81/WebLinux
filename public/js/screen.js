@@ -56,9 +56,31 @@ export class Screen {
 
   _send(evs) { this.m.inputEvents(evs); }
 
+  // Type text as key presses, in chunks so the guest's queues keep up.
+  typeText(text) {
+    const keys = [];
+    for (const ch of text) {
+      const k = K.charKey(ch);
+      if (!k) continue;
+      const code = K.KEYCODES[k[0]];
+      if (k[1]) keys.push([0, K.EV_KEY, 42, 1]);
+      keys.push([0, K.EV_KEY, code, 1], [0, K.EV_KEY, code, 0]);
+      if (k[1]) keys.push([0, K.EV_KEY, 42, 0]);
+      keys.push([0, K.EV_SYN, 0, 0]);
+    }
+    const step = () => {
+      if (!keys.length) return;
+      this._send(keys.splice(0, 200));
+      setTimeout(step, 30);
+    };
+    step();
+  }
+
   _wireInput() {
     const c = this.canvas;
     c.addEventListener('keydown', (e) => {
+      // Ctrl+Shift+V: let the browser paste (handled below)
+      if (e.ctrlKey && e.shiftKey && e.code === 'KeyV') return;
       const code = K.KEYCODES[e.code];
       if (code === undefined) return;
       e.preventDefault();
@@ -115,6 +137,12 @@ export class Screen {
       this._send([[1, K.EV_KEY, b, 0], [1, K.EV_SYN, 0, 0]]);
     });
     c.addEventListener('contextmenu', (e) => e.preventDefault());
+    // paste: type the text (ASCII, US layout) into the guest
+    addEventListener('paste', (e) => {
+      if (document.activeElement !== c) return;
+      e.preventDefault();
+      this.typeText(e.clipboardData.getData('text/plain'));
+    });
     c.addEventListener('wheel', (e) => {
       e.preventDefault();
       const evs = [];

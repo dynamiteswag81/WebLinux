@@ -1,0 +1,1 @@
+[[null, "weblinux:/# "], [{"sleep": 5000}, ""], [{"paste": "echo 'Pasted: A-Z {x} [y] <z> \"q\" ~!@#$%^&*()_+|' > /tmp/paste\n"}, ""], [{"sleep": 3000}, ""], ["cat /tmp/paste", "Pasted: A-Z {x} [y] <z> \"q\" ~!@#$%^&*()_+|"]]

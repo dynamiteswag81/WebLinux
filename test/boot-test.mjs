@@ -76,6 +76,9 @@ try {
       await page.mouse.move(x, y, { steps: 4 });
       if (input.wheel) await page.mouse.wheel(0, input.wheel);
       else await page.mouse.click(x, y, { clickCount: input.double ? 2 : 1 });
+    } else if (input && input.paste !== undefined) {
+      // what a Ctrl+Shift+V paste on the canvas does
+      await page.evaluate((t) => self.wlscreen.typeText(t), input.paste.replaceAll('@PORT@', String(PORT)));
     } else if (input && input.button) {
       // a button of the page; it may reload the page
       const nav = page.waitForNavigation({ timeout: TIMEOUT }).catch(() => null);
