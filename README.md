@@ -45,6 +45,19 @@ the machine running it can, so it only listens on localhost). Page options:
 `?cmdline=...`. `public/` holds the last built kernel (`vmlinux.wasm`)
 and root file system (`initramfs.cpio`), so no build is needed to try it.
 
+## Using it
+
+- The desktop opens with a terminal (bash). The **Menu** button (or the Windows key) has
+  Terminal, Files, Editor, Web browser, "Open web page...", About and a text console.
+  Ctrl+Alt+T opens a terminal, Alt+F4 closes a window, Alt+Tab switches.
+- **Clipboard**: Ctrl+Shift+V pastes the host's clipboard (typed in as keys). Selecting text
+  in the terminal, or Ctrl+C in the editor, copies to the host.
+- The terminal scrolls back with the mouse wheel or Shift+PageUp.
+- **Web browser**: NetSurf. Ctrl+U clears its address bar; its X button closes it.
+- Files you change are saved in the browser's storage for this site. **Reset disk** (bottom
+  bar) erases them; `poweroff` in a shell shuts down cleanly.
+- **Console** (bottom bar) shows the kernel log and a second shell (`ttyW0`).
+
 ## Build it
 
 On Ubuntu/Debian:
