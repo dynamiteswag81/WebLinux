@@ -1,0 +1,16 @@
+[
+ [null, "weblinux:/# "],
+ [{"sleep": 4000}, ""],
+ [{"click": [40, 753]}, ""],
+ [{"sleep": 400}, ""],
+ [{"click": [60, 608]}, ""],
+ [{"sleep": 800}, ""],
+ [{"kbd": "first line"}, ""],
+ [{"kbd": "second line"}, ""],
+ [{"press": ["ArrowUp", "ArrowUp", "Home", "Shift+End"]}, ""],
+ [{"press": "Control+c"}, ""],
+ [{"copied": "first line"}, ""],
+ [{"press": ["Control+End", "Control+v", "Control+s"]}, ""],
+ [{"sleep": 1500}, ""],
+ ["cat /root/untitled.txt", "second line\r\nfirst line"]
+]

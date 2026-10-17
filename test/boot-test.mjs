@@ -11,7 +11,8 @@
 // reloads the page (a new boot, same browser storage); {"click": [x, y]}
 // clicks on the canvas at frame buffer coordinates ("double": true for a
 // double click; "wheel": dy scrolls there instead); {"button": "id"} clicks a page button (dialogs are
-// accepted; a reload it causes restarts the output).  --shot saves a
+// accepted; a reload it causes restarts the output); {"press": "Control+c"}
+// (or a list) presses keys on the canvas.  --shot saves a
 // screenshot of the canvas at the end.  @PORT@ in an input becomes the
 // page server's port (reachable from the guest as 10.0.2.2).  The default checks that
 // bash comes up and runs a pipeline.
@@ -76,6 +77,10 @@ try {
       await page.mouse.move(x, y, { steps: 4 });
       if (input.wheel) await page.mouse.wheel(0, input.wheel);
       else await page.mouse.click(x, y, { clickCount: input.double ? 2 : 1 });
+    } else if (input && input.press) {
+      // key combinations on the canvas, e.g. "Control+c"
+      await page.focus('#screen');
+      for (const k of [].concat(input.press)) await page.keyboard.press(k);
     } else if (input && input.paste !== undefined) {
       // what a Ctrl+Shift+V paste on the canvas does
       await page.evaluate((t) => self.wlscreen.typeText(t), input.paste.replaceAll('@PORT@', String(PORT)));
