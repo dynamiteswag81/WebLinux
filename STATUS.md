@@ -174,10 +174,12 @@ Notes:
 1. Real internet use: run `node server.js` on a machine with internet and browse https sites in
    NetSurf (TLS via mbedTLS, DNS via the relay's resolver). Not testable from the cloud sandbox
    (no outbound access there). Check certificate validation and speed.
-2. NetSurf: start it with a URL from the desktop (e.g. a URL prompt), keyboard shortcuts
-   (Ctrl+L), and fix the URL bar not selecting its text on click (typing appends).
-3. Performance: each keystroke is a single-CPU round trip desktop -> pty -> bash -> desktop;
-   measure context switch cost in the kernel/JS baton and speed it up. Boot takes ~4 s.
+2. NetSurf: Ctrl+U clears the URL bar (clicking does not select it); a URL prompt in the
+   desktop would help. Closing NetSurf returns to the desktop (test/browse.json).
+3. Performance (measured 2026-10-17, headless Chromium): pipe round trip between two processes
+   86 us (`test/pingpong.c`), `$(echo)` subshell 1.3 ms, exec of BusyBox ~20 ms (the 1.2 MB
+   module is compiled on every exec: cache compiled modules per file in JS). Boot ~4 s incl.
+   formatting a new disk. The desktop's full redraw is 4 ms.
 4. Desktop polish: clipboard with the host, terminal selection/scrollback, time zone from the
    browser, wallpaper/settings, an app launcher entry per installed program.
 5. Host: on `pagehide` ask the kernel to sync (IRQ_HOST); a UI button to reset the disk
