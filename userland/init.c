@@ -19,6 +19,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mount.h>
+#include <sys/reboot.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -157,6 +158,32 @@ out:
 	umount2("/dev", MNT_DETACH);
 }
 
+/* BusyBox's halt, poweroff and reboot signal init: USR1, USR2, TERM */
+static volatile sig_atomic_t shutdown_req;
+
+static void on_signal(int sig)
+{
+	shutdown_req = sig;
+}
+
+static void shutdown_now(int sig)
+{
+	int how = sig == SIGTERM ? RB_AUTOBOOT : sig == SIGUSR1 ? RB_HALT_SYSTEM : RB_POWER_OFF;
+
+	fprintf(stderr, "init: %s\n", how == RB_AUTOBOOT ? "rebooting" : "powering off");
+	kill(-1, SIGTERM);
+	sleep(1);
+	kill(-1, SIGKILL);
+	while (waitpid(-1, NULL, WNOHANG) > 0)
+		;
+	sync();
+	/* the disk holds the overlay's upper layer: make it clean */
+	mount(NULL, "/mnt/disk", NULL, MS_REMOUNT | MS_RDONLY, NULL);
+	sync();
+	reboot(how);
+	_exit(0);
+}
+
 /* Child side of the vfork: only syscalls, then exec. */
 static pid_t spawn(char *const argv[], const struct console *con)
 {
@@ -188,6 +215,13 @@ int main(void)
 	if (getpid() != 1)
 		return 1;
 	persistent_root();
+	{
+		struct sigaction sa = { 0 };
+		sa.sa_handler = on_signal;
+		sigaction(SIGTERM, &sa, NULL);
+		sigaction(SIGUSR1, &sa, NULL);
+		sigaction(SIGUSR2, &sa, NULL);
+	}
 	if (access(desktop[0], X_OK) == 0 && !cmdline_has("weblinux.text"))
 		consoles[1].argv = desktop;
 	mnt("proc", "/proc", "proc", MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL);
@@ -210,6 +244,8 @@ int main(void)
 			consoles[n++] = consoles[i];
 
 	for (;;) {
+		if (shutdown_req)
+			shutdown_now(shutdown_req);
 		for (i = 0; i < n; i++)
 			if (consoles[i].shell < 0)
 				consoles[i].shell = spawn(consoles[i].argv, &consoles[i]);

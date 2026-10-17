@@ -1,0 +1,8 @@
+[
+ [null, "weblinux:/# "],
+ ["echo saved-$((5*5)) > /root/p; poweroff", "powering off"],
+ [{"sleep": 4000}, ""],
+ [{"reload": 1}, "(persistent)"],
+ [null, "weblinux:/# "],
+ ["cat /root/p; rm /root/p", "saved-25"]
+]
