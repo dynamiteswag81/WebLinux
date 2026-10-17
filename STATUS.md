@@ -11,6 +11,7 @@ and applies `patches/linux/` (see CLAUDE.md).
 - networking, so a browser can run inside it. The target browser is **NetSurf**, which has a Linux framebuffer frontend; Chromium is not feasible.
 - **audio** (added 2026-10-17 by the user): sound playing in the browser tab. A kernel sound driver (e.g. ALSA PCM through a ring the host plays with Web Audio) so ordinary programs can make sound.
 - **a README.md** (added 2026-10-17 by the user) for the public GitHub page: what it is, how to build and run it, and a clear note that **the whole project was vibe coded** (written by AI, Claude Code).
+- **License: GPL-2.0** (`LICENSE`, added 2026-10-17). It has to be: the kernel port is a modification of Linux. The README must say so. Copyright holder is the handle `dynamiteswag81`; never put the user's real name anywhere.
 
 **User's rules:**
 - Write a real Linux port ourselves: no x86 emulator (v86 was rejected), no reusing other wasm Linux ports.
