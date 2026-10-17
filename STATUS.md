@@ -113,26 +113,43 @@ and applies `patches/linux/` (see CLAUDE.md).
 - Commits: kernel up to "wasm: fork() via memory snapshots". The project root itself is not a git repo yet; consider making one that excludes `linux/` and `src/`.
 
 ## In progress
-Nothing half done. Last verified (Linux cloud session, 2026-10-17): boots to `/sbin/init`,
-`/etc/rc`, then a login bash with full job control: `jobs`, `&`, `kill %1`, Ctrl-C, Ctrl-Z,
-`bg` (`node test/boot-test.mjs test/jobs.json` passes). BusyBox 1.37.0 (NOMMU, 353 applets) works.
-Notes from getting there:
+Nothing half done. Last verified (Linux cloud session, 2026-10-17), all with
+`NODE_PATH=/opt/wltools/node_modules node test/boot-test.mjs <steps>`:
+- default: boots to `/sbin/init`, `/etc/rc`, login bash on ttyW0; pipelines.
+- `test/jobs.json`: full job control (`&`, `jobs`, `kill %1`, Ctrl-C, Ctrl-Z, `bg`).
+- `test/screen.json`: fbcon on the canvas (tty1, TERM=linux, colors), typing on the canvas.
+  User programs can mmap /dev/fb0 (test/fbtest.c).
+- `test/persist.json`: a file written in /root survives a page reload (OPFS disk, overlay root).
+- BusyBox 1.37.0 (NOMMU, 353 applets) works.
+
+Drivers (`linux/arch/wasm/drivers/`, host side in `public/js/`):
+- `wasmfb.c` / `screen.js`: XRGB8888 frame buffer in kernel memory, blitted every animation
+  frame; `?mode=WxH` (kernel `wasmfb.mode=`). fbcon + VT on it.
+- `wasminput.c` / `screen.js` + `keymap.js`: keyboard (KeyboardEvent.code -> keycode, Shift
+  synthesized for synthetic events) and absolute pointer + wheel; ring of 12-byte events.
+- `wasmblk.c` / `disk.js`: /dev/wda, one request at a time via a shared slot; the disk worker
+  uses an OPFS sync access handle (`disk0.img`, 256 MiB default), falls back to memory.
+  `?disk=opfs|mem|none`, `?disksize=MiB`. Init formats a blank disk with mke2fs, mounts it
+  (ext4 driver) and switches to an overlay root; `weblinux.volatile` on the cmdline skips it.
+
+Notes:
 - bash: `PGRP_PIPE` must stay off (build-bash.sh undefines it): with it, a job's first
   child blocks on a pipe until the parent runs, but our fork() runs the child until it execs.
 - wasm-cc passes `-u __main_argc_argv`: crt1 references main weakly, so a main inside an
   archive (BusyBox's libbb) was not linked.
 - BusyBox: SHA1/SHA256_HWACCEL off (x86 asm); musl's empty libm.a etc. are created by build-libc.sh.
+- Kernel patches: export only the new commit, e.g.
+  `git -C linux format-patch --start-number 7 -o ../patches/linux HEAD~1`, so old patch files
+  don't churn.
 
 ## Next steps
-1. (done) BusyBox. (done) `/sbin/init` with job control.
-2. Console UI: the page's console is a `<pre>` that strips ANSI (TERM=dumb). A real terminal
-   emulator (VT100 subset on a canvas) comes with the desktop's terminal.
-3. Kernel drivers in `arch/wasm/drivers/`, enabling NET, BLOCK and INPUT in the defconfig:
-   - framebuffer: memory blitted to a canvas,
-   - input: evdev, absolute mouse plus keyboard, fed from a ring and IRQ,
-   - block device: commit-on-freeze to OPFS/IndexedDB for persistence,
-   - network device: Ethernet frames through a ring.
-4. Lightweight desktop in C on fbdev and evdev: windows, taskbar, terminal (pty plus bash), file manager, editor.
-5. Persistence: ext2 on the block device, overlayfs over the initramfs, periodic commits plus `pagehide`.
-6. Networking: a JS TCP/IP NAT in a worker plus a WebSocket relay in `server.js`. Then build NetSurf's framebuffer frontend (needs curl, openssl or mbedtls, libpng, libjpeg, freetype).
+1. Network device (`wasmnet.c`): Ethernet frames through rx/tx rings + WASM_IRQ_NET; host side a
+   JS TCP/IP NAT in a worker plus a WebSocket relay in `server.js` (`host/netrelay.js`).
+2. Audio: ALSA PCM driver with a ring the host plays through an AudioWorklet.
+3. Lightweight desktop in C on fbdev + evdev: windows, taskbar, terminal (pty + bash),
+   file manager, editor. Started from `/etc/rc` or a `startx`-like command on tty1.
+4. NetSurf framebuffer frontend (needs curl, mbedtls or openssl, libpng, libjpeg, freetype).
+5. Shutdown: init should handle `poweroff`/`reboot` (BusyBox signals init: SIGUSR2/SIGTERM),
+   sync, then reboot(2). Host: on `pagehide` ask the kernel to sync (IRQ_HOST + emergency sync).
+6. The page console (`<pre>`, ANSI stripped) is now only the debug console; the canvas is main.
 7. A start script (`start.bat`). (README.md written 2026-10-17; keep its status list current.)
