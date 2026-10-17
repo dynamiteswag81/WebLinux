@@ -15,6 +15,9 @@ struct surface {
 	struct rect clip;	/* drawing is limited to this */
 };
 
+/* the same as a constant expression */
+#define RGB(r, g, b) ((uint32_t)(r) << 16 | (uint32_t)(g) << 8 | (uint32_t)(b))
+
 static inline uint32_t rgb(int r, int g, int b)
 {
 	return (uint32_t)r << 16 | (uint32_t)g << 8 | (uint32_t)b;

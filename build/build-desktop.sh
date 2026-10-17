@@ -20,5 +20,6 @@ with open(sys.argv[2], 'w') as f:
         f.write('\t' + ', '.join('0x' + b for b in bytes_[i:i + 16]) + ',\n')
     f.write('};\n')
 PY
-bash $W/build/wasm-cc -O2 -Wall -Wno-unused-result -I$O $S/desk.c $S/gfx.c $S/term.c -o $O/wldesk
+bash $W/build/wasm-cc -O2 -Wall -Wno-unused-result -I$O $S/desk.c $S/termapp.c $S/files.c \
+	$S/editor.c $S/apps.c $S/gfx.c $S/term.c -o $O/wldesk
 ls -la $O/wldesk

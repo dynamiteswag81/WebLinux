@@ -79,6 +79,17 @@ function consoleText(s) {
 }
 machine.addEventListener('console', (e) => consoleText(e.detail));
 machine.addEventListener('log', (e) => appendLog(e.detail));
+// where files are kept: say it when they are not saved
+let diskNote = '';
+machine.addEventListener('disk', (e) => {
+  if (e.detail.kind === 'opfs') {
+    diskNote = ' · files saved in this browser';
+    navigator.storage?.persist?.().catch(() => {}); // ask not to be evicted
+  } else if (machine.disk.backend === 'opfs') {
+    diskNote = ' · NOT saving (is WebLinux open in another tab?)';
+  }
+  if (status.textContent.startsWith('running')) status.textContent = 'running' + diskNote;
+});
 machine.addEventListener('halt', (e) => {
   status.textContent = ['powered off', 'rebooting', 'kernel panic'][e.detail] || 'halted';
   if (e.detail === 1) setTimeout(() => location.reload(), 500);
@@ -124,6 +135,6 @@ addEventListener('pagehide', () => machine.requestSync());
 
 status.textContent = 'booting…';
 machine.boot().then(
-  () => { status.textContent = 'running'; },
+  () => { status.textContent = 'running' + diskNote; },
   (err) => { status.textContent = 'failed'; appendLog(`boot failed: ${err.message}\n`); },
 );

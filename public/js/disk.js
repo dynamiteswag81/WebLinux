@@ -76,7 +76,7 @@ async function openStore(backend, name, sizeMiB) {
       let h;
       for (let tries = 0; ; tries++) {
         try { h = await fh.createSyncAccessHandle(); break; } catch (e) {
-          if (e.name !== 'NoModificationAllowedError' || tries >= 50) throw e;
+          if (e.name !== 'NoModificationAllowedError' || tries >= 150) throw e;
           await new Promise((r) => setTimeout(r, 100));
         }
       }

@@ -1,0 +1,9 @@
+[
+ [null, "weblinux:/# "],
+ ["echo saved-$((6*7)) > /root/nosync; mkdir -p /root/Desktop/d && echo two > /root/Desktop/d/f; echo wrote-$((1+1))", "wrote-2"],
+ [{"sleep": 3000}, ""],
+ [{"reload": 1}, "(persistent)"],
+ [null, "weblinux:/# "],
+ ["cat /root/nosync /root/Desktop/d/f; dmesg | grep -c 'EXT4-fs.*journal' ", "saved-42\r\ntwo"],
+ ["rm -r /root/nosync /root/Desktop/d; sync; echo gone-$((1+2))", "gone-3"]
+]
