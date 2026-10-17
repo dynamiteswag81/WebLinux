@@ -123,6 +123,10 @@ Nothing half done. Last verified (Linux cloud session, 2026-10-17), all with
 - `test/net.json`: ping, wget of a 4.4 MB file from the host through the NAT, refused port -> RST.
 - `test/audio.json`: /dev/dsp (OSS emulation over ALSA) plays in real time, Web Audio live.
 - `test/desktop.json`: wldesk on tty1, typing into its terminal, Menu -> Files by mouse.
+- `test/browser.json`, `test/browse.json`: NetSurf from the desktop menu; it loads
+  `public/test/page.html` from the page server over the NAT with CSS, a PNG and JavaScript,
+  in anti-aliased DejaVu fonts. (Screenshots: `--shot file.png`.)
+- `test/poweroff.json`: `poweroff` syncs; the file is there after the next boot.
 - BusyBox 1.37.0 (NOMMU, 353 applets) works.
 
 Desktop (`userland/desktop/`, `build/build-desktop.sh` -> `/usr/bin/wldesk`): one process on tty1
@@ -131,6 +135,14 @@ Windows (move, resize grip, minimize, close), taskbar, clock, menu, desktop icon
 (pty + bash, `term.c` VT100/xterm subset, TERM=xterm, `/etc/termcap`), files, editor. "Web browser"
 runs `/usr/bin/netsurf` full screen when it exists. `wldesk --bench` times redraws.
 `weblinux.text` on the cmdline keeps a text shell on tty1 instead.
+
+NetSurf 3.11 (`build/build-netsurf.sh`, all from Ubuntu's source pool via fetch-sources.sh):
+zlib, mbedTLS 3.6, curl 8.20 (mbedTLS, no threads), libpng, libjpeg-turbo, expat, FreeType,
+then NetSurf's own libraries and the framebuffer frontend with Duktape JavaScript.
+`userland/netsurf/linux.c` is our libnsfb surface (fbdev mmap + evdev, software cursor);
+`patches/netsurf/` holds our NetSurf changes (no mmap on wasm). Installed as /usr/bin/netsurf
+with resources in /usr/share/netsurf (our `Choices`: CA bundle, JS on), DejaVu fonts in
+/usr/share/fonts/truetype/dejavu, Mozilla's CA bundle in /etc/ssl/certs, and /usr/bin/curl.
 
 Drivers (`linux/arch/wasm/drivers/`, host side in `public/js/`):
 - `wasmfb.c` / `screen.js`: XRGB8888 frame buffer in kernel memory, blitted every animation
@@ -159,14 +171,16 @@ Notes:
   don't churn.
 
 ## Next steps
-1. NetSurf (framebuffer frontend, `/usr/bin/netsurf`): its libraries (libnsfb with a linux
-   fbdev+evdev surface, libcss, libdom, libhubbub, libparserutils, libwapcaplet, libnsutils,
-   libutf8proc, libnsbmp, libnsgif), plus zlib, libpng, libjpeg, curl and mbedtls/openssl.
-   Downloads: try Ubuntu's source pool (fetch-sources.sh style fallbacks).
-2. Shutdown: init should handle `poweroff`/`reboot` (BusyBox signals init: SIGUSR2/SIGTERM),
-   sync, then reboot(2). Host: on `pagehide` ask the kernel to sync (IRQ_HOST + emergency sync).
-3. Desktop polish: clipboard with the host, mouse in the terminal (selection), icons for more
-   apps, wallpaper, a settings/about panel, time zone from the browser.
-4. Performance: the single CPU round trip per keystroke (desktop -> pty -> bash -> desktop)
-   is noticeable; look at scheduler/context switch cost.
-5. A start script (`start.bat`). Keep README.md's status list current.
+1. Real internet use: run `node server.js` on a machine with internet and browse https sites in
+   NetSurf (TLS via mbedTLS, DNS via the relay's resolver). Not testable from the cloud sandbox
+   (no outbound access there). Check certificate validation and speed.
+2. NetSurf: start it with a URL from the desktop (e.g. a URL prompt), keyboard shortcuts
+   (Ctrl+L), and fix the URL bar not selecting its text on click (typing appends).
+3. Performance: each keystroke is a single-CPU round trip desktop -> pty -> bash -> desktop;
+   measure context switch cost in the kernel/JS baton and speed it up. Boot takes ~4 s.
+4. Desktop polish: clipboard with the host, terminal selection/scrollback, time zone from the
+   browser, wallpaper/settings, an app launcher entry per installed program.
+5. Host: on `pagehide` ask the kernel to sync (IRQ_HOST); a UI button to reset the disk
+   (delete the OPFS file); a start script (`start.bat`).
+6. Size: initramfs is 13.7 MB (5.4 MB gzipped by server.js); NetSurf is 6.5 MB.
+7. Keep README.md's status list current.
