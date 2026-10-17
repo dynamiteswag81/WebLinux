@@ -175,6 +175,14 @@ export class Machine extends EventTarget {
     this.raiseIrq(2);
   }
 
+  // Ask the kernel to write dirty data out now (arch/wasm/drivers/wasmhost.c).
+  requestSync() {
+    const req = this.dev.host;
+    if (!req || this.halted) return;
+    Atomics.or(this.i32, req >> 2, 1);
+    this.raiseIrq(5);
+  }
+
   raiseIrq(n) {
     const idx = this.dev.irq >> 2;
     Atomics.or(this.i32, idx, 1 << n);

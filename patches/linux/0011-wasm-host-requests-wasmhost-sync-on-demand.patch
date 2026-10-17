@@ -1,0 +1,79 @@
+From 01d770d2d4ae075eb3387e97d0add4602c34fc48 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 17 Oct 2026 19:18:59 +0000
+Subject: [PATCH] wasm: host requests (wasmhost): sync on demand
+
+A shared request word plus WASM_IRQ_HOST lets the page ask the kernel to
+write dirty data out (sys_sync from a work item) when the tab is hidden.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/wasm/drivers/Makefile   |  1 +
+ arch/wasm/drivers/wasmhost.c | 46 ++++++++++++++++++++++++++++++++++++
+ 2 files changed, 47 insertions(+)
+ create mode 100644 arch/wasm/drivers/wasmhost.c
+
+diff --git a/arch/wasm/drivers/Makefile b/arch/wasm/drivers/Makefile
+index 1f6e84de1..5ecd1c0c9 100644
+--- a/arch/wasm/drivers/Makefile
++++ b/arch/wasm/drivers/Makefile
+@@ -5,3 +5,4 @@ obj-$(CONFIG_WASM_INPUT) += wasminput.o
+ obj-$(CONFIG_WASM_BLK) += wasmblk.o
+ obj-$(CONFIG_WASM_NET) += wasmnet.o
+ obj-$(CONFIG_WASM_SND) += wasmsnd.o
++obj-y += wasmhost.o
+diff --git a/arch/wasm/drivers/wasmhost.c b/arch/wasm/drivers/wasmhost.c
+new file mode 100644
+index 000000000..a97bdca56
+--- /dev/null
++++ b/arch/wasm/drivers/wasmhost.c
+@@ -0,0 +1,46 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Requests from the host page to the kernel.
++ *
++ * The host sets bits in a shared request word and raises WASM_IRQ_HOST:
++ *   WASM_HOST_SYNC: write dirty data out now (the tab was hidden and may
++ *   be closed at any moment).
++ */
++
++#include <linux/init.h>
++#include <linux/interrupt.h>
++#include <linux/syscalls.h>
++#include <linux/workqueue.h>
++
++#include <asm/wasm.h>
++
++#define WASM_HOST_SYNC	1
++
++/* shared with the host; layout is ABI (public/js/machine.js) */
++static u32 wasm_host_req;
++
++static void wasm_host_sync_fn(struct work_struct *w)
++{
++	ksys_sync();
++}
++static DECLARE_WORK(wasm_host_sync_work, wasm_host_sync_fn);
++
++static irqreturn_t wasm_host_irq(int irq, void *dev_id)
++{
++	u32 req = __atomic_exchange_n(&wasm_host_req, 0, __ATOMIC_ACQ_REL);
++
++	if (req & WASM_HOST_SYNC)
++		schedule_work(&wasm_host_sync_work);
++	return IRQ_HANDLED;
++}
++
++static int __init wasm_host_init(void)
++{
++	int ret = request_irq(WASM_IRQ_HOST, wasm_host_irq, 0, "host", NULL);
++
++	if (ret)
++		return ret;
++	wasm_host_dev_register("host", &wasm_host_req);
++	return 0;
++}
++device_initcall(wasm_host_init);
+-- 
+2.43.0
+

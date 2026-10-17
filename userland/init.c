@@ -16,6 +16,7 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mount.h>
@@ -41,7 +42,7 @@ static struct console consoles[] = {
 
 static char *shell_env[] = {
 	"TERM=dumb", "HOME=/root", "SHELL=/bin/bash", "USER=root", "LOGNAME=root",
-	"PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", NULL
+	"PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", NULL, NULL
 };
 
 static void mnt(const char *src, const char *dir, const char *type,
@@ -215,6 +216,12 @@ int main(void)
 	if (getpid() != 1)
 		return 1;
 	persistent_root();
+	/* the page passes the browser's time zone as TZ=... on the command line */
+	if (getenv("TZ")) {
+		static char tz[64];
+		snprintf(tz, sizeof(tz), "TZ=%s", getenv("TZ"));
+		shell_env[6] = tz;
+	}
 	{
 		struct sigaction sa = { 0 };
 		sa.sa_handler = on_signal;

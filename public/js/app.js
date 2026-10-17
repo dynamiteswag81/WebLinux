@@ -9,11 +9,20 @@ const log = $('log');
 const status = $('status');
 
 const params = new URLSearchParams(location.search);
+
+// The browser's current UTC offset as a POSIX TZ value (no DST rules: the
+// guest has no zoneinfo).  The kernel hands TZ=... to init's environment.
+function posixTZ() {
+  const off = new Date().getTimezoneOffset(); // minutes west of UTC
+  const a = Math.abs(off);
+  return `LOC${off < 0 ? '-' : ''}${Math.floor(a / 60)}${a % 60 ? ':' + String(a % 60).padStart(2, '0') : ''}`;
+}
 const machine = new Machine({
   memoryMiB: Number(params.get('mem')) || 512,
   disk: params.get('disk') || 'opfs',          // opfs | mem | none
   diskSizeMiB: Number(params.get('disksize')) || 256,
   cmdline: (params.get('cmdline') || 'console=ttyW0 rdinit=/init loglevel=7')
+    + ` TZ=${posixTZ()}`
     + (params.get('mode') ? ` wasmfb.mode=${params.get('mode')}` : ''),
 });
 self.machine = machine; // handy from devtools
@@ -57,6 +66,12 @@ $('cons').addEventListener('submit', (e) => {
   machine.consoleInput(v + '\n');
 });
 $('btn-log').addEventListener('click', () => $('bootlog').classList.toggle('hidden'));
+
+// the tab may be closed soon after it is hidden: write the disk out
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') machine.requestSync();
+});
+addEventListener('pagehide', () => machine.requestSync());
 
 status.textContent = 'booting…';
 machine.boot().then(

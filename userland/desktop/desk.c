@@ -394,7 +394,7 @@ static const struct app_ops term_ops = {
 
 static char *child_env[] = {
 	"TERM=xterm", "HOME=/root", "SHELL=/bin/bash", "USER=root", "LOGNAME=root",
-	"PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", "COLORTERM=", NULL
+	"PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", NULL, NULL
 };
 
 static void open_terminal(const char *cmd)
@@ -1443,6 +1443,11 @@ int main(int argc, char **argv)
 {
 	struct sigaction sa = { 0 };
 
+	if (getenv("TZ")) {	/* pass the time zone on to programs */
+		static char tz[64];
+		snprintf(tz, sizeof(tz), "TZ=%s", getenv("TZ"));
+		child_env[6] = tz;
+	}
 	if (open_fb())
 		return 1;
 	open_inputs();
