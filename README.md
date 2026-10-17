@@ -6,7 +6,9 @@ This is not an emulator. WebLinux is a port of the Linux kernel (6.18) to a new
 architecture, `wasm`: the kernel is compiled to a WebAssembly module, and user programs
 (musl libc, bash, BusyBox) are compiled to WebAssembly too. Every task runs in a Web
 Worker on one shared memory, and the page provides the "hardware": a timer, a console,
-and soon a framebuffer, input, disks, network and sound.
+a frame buffer, keyboard and mouse, a disk, a network card and sound.
+
+![The WebLinux desktop](docs/screenshot.png)
 
 > **Vibe coded.** The whole project, including the kernel port, the libc port, the
 > build scripts and the web front end, was written by AI (Claude Code). A human set
@@ -20,10 +22,13 @@ Working today:
 - `/sbin/init`, then **bash 5.3** as a login shell with job control (`&`, `jobs`,
   Ctrl-C, Ctrl-Z, `bg`, `fg`),
 - **BusyBox 1.37** for the usual Unix tools,
-- a **desktop** on the frame buffer (windows, taskbar, terminal, file manager, editor),
-  with keyboard and mouse,
-- **persistence**: the root file system is an overlay on a disk kept in the browser's
-  storage (OPFS), so changes survive closing the tab,
+- a **desktop** on the frame buffer: windows, taskbar, start menu, right-click menus,
+  desktop icons (`~/Desktop`), and programs: terminal, file manager (rename, delete,
+  copy/cut/paste), text editor, Paint, calculator, Minesweeper, Snake, task manager,
+  settings,
+- **persistence**: the root file system is an overlay on an ext4 disk (with a journal,
+  checked at every boot) kept in the browser's storage (OPFS), so changes survive
+  closing the tab; writes reach it within a second or two,
 - **networking**: an Ethernet device routed by a small NAT in the page; TCP and UDP go
   out through the page server,
 - the **NetSurf** web browser (HTML, CSS, images, JavaScript),
@@ -48,8 +53,12 @@ and root file system (`initramfs.cpio`), so no build is needed to try it.
 ## Using it
 
 - The desktop opens with a terminal (bash). The **Menu** button (or the Windows key) has
-  Terminal, Files, Editor, Web browser, "Open web page...", About and a text console.
-  Ctrl+Alt+T opens a terminal, Alt+F4 closes a window, Alt+Tab switches.
+  all the programs; Help in it explains the rest. **Right-click** the desktop, icons,
+  files, title bars, taskbar buttons, the terminal or the editor for a menu.
+  Double-click a title bar to maximize. Ctrl+Alt+T opens a terminal, Alt+F4 closes a
+  window, Alt+Tab switches.
+- **Files**: F2 renames, Delete deletes, Ctrl+C/X/V copy, cut and paste files, Ctrl+H
+  shows hidden files. Files in `/root/Desktop` show up as desktop icons.
 - **Clipboard**: Ctrl+Shift+V pastes the host's clipboard (typed in as keys). Selecting text
   in the terminal, or Ctrl+C in the editor, copies to the host.
 - The terminal scrolls back with the mouse wheel or Shift+PageUp.
@@ -57,6 +66,14 @@ and root file system (`initramfs.cpio`), so no build is needed to try it.
 - Files you change are saved in the browser's storage for this site. **Reset disk** (bottom
   bar) erases them; `poweroff` in a shell shuts down cleanly.
 - **Console** (bottom bar) shows the kernel log and a second shell (`ttyW0`).
+
+## Limits
+
+It is a toy. One CPU, no MMU (so `fork()` works by copying memory, and programs that
+need real virtual memory won't run), every exec compiles a WebAssembly module (a BusyBox
+command takes ~20 ms to start), and C programs have to be cross-compiled for it: there is
+no compiler inside. It needs `server.js` (or another server sending the COOP/COEP headers
+and relaying the network) rather than a plain static host.
 
 ## Build it
 
@@ -72,9 +89,10 @@ sh build/build-libc.sh         # sysroot: kernel headers, musl, compiler-rt buil
 sh build/build-bash.sh
 sh build/build-busybox.sh
 sh build/build-desktop.sh
+sh build/build-e2fsprogs.sh    # mke2fs/e2fsck/tune2fs for the browser disk
 sh build/build-netsurf.sh      # curl, mbedTLS, image libraries, NetSurf (slow)
 sh build/mkrootfs.sh           # -> public/initramfs.cpio
-NODE_PATH=/opt/wltools/node_modules node test/boot-test.mjs test/jobs.json
+sh test/run-all.sh             # every boot test, in headless Chromium
 ```
 
 The kernel port lives in `patches/linux/` (applied by `fetch-sources.sh` to a vanilla
@@ -84,6 +102,7 @@ tree in `linux/`), the musl port in `build/port-musl.py`.
 
 GPL-2.0 (see [LICENSE](LICENSE)). The kernel port is a modification of Linux, so the
 project is under the kernel's license. Bundled third-party programs keep their own
-licenses (musl: MIT, bash: GPL-3.0, BusyBox: GPL-2.0).
+licenses (musl: MIT, bash: GPL-3.0, BusyBox: GPL-2.0, e2fsprogs: GPL-2.0, NetSurf:
+GPL-2.0, curl: curl license, mbedTLS: Apache-2.0, DejaVu fonts: free license).
 
 Copyright dynamiteswag81.

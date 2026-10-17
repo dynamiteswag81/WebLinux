@@ -1,0 +1,21 @@
+[
+ [null, "weblinux:/# "],
+ [{"sleep": 6000}, ""],
+ [{"click": [55, 350], "right": true}, ""],
+ [{"sleep": 500}, ""],
+ [{"click": [80, 423]}, ""],
+ [{"sleep": 800}, ""],
+ [{"press": "Control+u"}, ""],
+ [{"kbd": "hello.txt"}, ""],
+ [{"sleep": 1000}, ""],
+ ["ls /root/Desktop", "hello.txt"],
+ [{"click": [950, 300], "right": true}, ""],
+ [{"sleep": 500}, ""],
+ [{"click": [980, 316]}, ""],
+ [{"sleep": 800}, ""],
+ [{"kbd": ""}, ""],
+ [{"sleep": 1000}, ""],
+ ["ls -d /root/Desktop/*", "New folder"],
+ [{"click": [40, 753]}, ""],
+ [{"sleep": 800}, ""]
+]

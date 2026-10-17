@@ -139,14 +139,24 @@ Nothing half done. Last verified (Linux cloud session, 2026-10-17), all with
 - `test/tls.json`: HTTPS with curl/mbedTLS in the guest against a local server with a
   throwaway certificate; an untrusted certificate is refused.
 - `test/paste.json`, `test/copy.json`, `test/editor.json`, `test/url.json`, `test/reset.json`.
+- `test/save.json`: a file written *without* sync survives a reload 3 s later (journal replay).
+- `test/rename.json`: right-click a desktop icon -> Rename, right-click the desktop -> New folder.
 - BusyBox 1.37.0 (NOMMU, 353 applets) works.
 
 Desktop (`userland/desktop/`, `build/build-desktop.sh` -> `/usr/bin/wldesk`): one process on tty1
 (KD_GRAPHICS, K_OFF), back buffer copied to the mmapped fb (full redraw about 4 ms), evdev input.
-Windows (move, resize grip, minimize, close), taskbar, clock, menu, desktop icons; apps: terminal
-(pty + bash, `term.c` VT100/xterm subset, TERM=xterm, `/etc/termcap`), files, editor. "Web browser"
-runs `/usr/bin/netsurf` full screen when it exists. `wldesk --bench` times redraws.
-`weblinux.text` on the cmdline keeps a text shell on tty1 instead.
+- `desk.c`: window manager (move, resize grip, minimize, maximize, close; double-click title),
+  taskbar, start menu, pop-up menus (`popup_menu()`, right button = BTN_RIGHT -> `M_RIGHT`),
+  dialogs (`open_prompt()`, `open_message()`), desktop icons = 4 launchers + `/root/Desktop`
+  (reloaded when its mtime changes; first run writes Welcome.txt), settings in
+  `/root/.config/wldesk` (wallpaper), per-window `tick_ms` timers. `desk.h` is the app API.
+- `termapp.c` (pty + bash, `term.c` VT100/xterm subset, TERM=xterm), `files.c` (rename/F2,
+  delete, new file/folder, copy/cut/paste via BusyBox cp/mv/rm, properties, hidden files,
+  auto-refresh), `editor.c` (save as, open, clipboard), `apps.c` (calculator, Minesweeper,
+  Snake, task manager, Paint with 24/32-bit BMP load/save, settings).
+- "Web browser" runs `/usr/bin/netsurf` full screen. `wldesk --bench` times redraws.
+  `weblinux.text` on the cmdline keeps a text shell on tty1 instead. Help text:
+  `rootfs/usr/share/doc/weblinux.txt` (Menu -> Help).
 
 NetSurf 3.11 (`build/build-netsurf.sh`, all from Ubuntu's source pool via fetch-sources.sh):
 zlib, mbedTLS 3.6, curl 8.20 (mbedTLS, no threads), libpng, libjpeg-turbo, expat, FreeType,
@@ -169,8 +179,13 @@ Drivers (`linux/arch/wasm/drivers/`, host side in `public/js/`):
 - entropy: `host.get_random` seeds the CRNG at boot.
 - `wasmblk.c` / `disk.js`: /dev/wda, one request at a time via a shared slot; the disk worker
   uses an OPFS sync access handle (`disk0.img`, 256 MiB default), falls back to memory.
-  `?disk=opfs|mem|none`, `?disksize=MiB`. Init formats a blank disk with mke2fs, mounts it
-  (ext4 driver) and switches to an overlay root; `weblinux.volatile` on the cmdline skips it.
+  `?disk=opfs|mem|none`, `?disksize=MiB`. Init formats a blank disk as ext4 with a journal
+  (e2fsprogs' mke2fs, `build/build-e2fsprogs.sh`; BusyBox's makes ext2 without one, which is
+  what old disks have: init adds a journal with tune2fs), runs `e2fsck -p` every boot (the
+  tab can close mid-write), mounts with `commit=1` and switches to an overlay root;
+  `weblinux.volatile` on the cmdline skips it. `/etc/rc` sets dirty_expire 1 s / writeback
+  0.5 s, bash appends history after every command. The page says "NOT saving" when it fell
+  back to a memory disk (another tab holds the OPFS file).
 
 Notes:
 - bash: `PGRP_PIPE` must stay off (build-bash.sh undefines it): with it, a job's first
@@ -195,10 +210,12 @@ Notes:
    86 us (`test/pingpong.c`), `$(echo)` subshell 1.3 ms, exec of BusyBox ~20 ms (the 1.2 MB
    module is compiled on every exec: cache compiled modules per file in JS). Boot ~4 s incl.
    formatting a new disk. The desktop's full redraw is 4 ms.
-4. Desktop polish: (done) paste from the host with Ctrl+Shift+V (test/paste.json), copy by
-   selecting in the terminal (OSC 52 on ttyW0 -> navigator.clipboard, test/copy.json), 1000
-   lines of scrollback (wheel, Shift+PgUp), TZ from the browser. Still open: copy/paste in the
-   editor and NetSurf, wallpaper/settings, a launcher entry per installed program.
+4. Desktop polish: done: clipboard, scrollback, right-click menus everywhere, rename/delete/
+   copy/paste of files, desktop folder, maximize, Save as, more programs, wallpaper settings.
+   Still open: multi-select in Files, drag and drop, icon positions, asking before closing a
+   modified editor, image formats other than BMP, copy/paste in NetSurf.
 5. (done) sync on hidden/pagehide, Reset disk and Full screen buttons, start.bat/start.sh.
 6. Size: initramfs is 13.7 MB (5.4 MB gzipped by server.js); NetSurf is 6.5 MB.
 7. Keep README.md's status list current.
+8. Ideas if the project is picked up again: a C compiler inside (e.g. a port of TinyCC
+   emitting wasm is hard; chibicc-like + a wasm backend), caching compiled modules per file.

@@ -88,6 +88,18 @@ static int disk_state(const char *dev)
 	return 0;
 }
 
+/* the ext superblock's compat features include a journal */
+static int has_journal(const char *dev)
+{
+	unsigned char b[4];
+	int fd = open(dev, O_RDONLY), n;
+	if (fd < 0)
+		return 0;
+	n = pread(fd, b, sizeof(b), 1024 + 0x5c);
+	close(fd);
+	return n == sizeof(b) && (b[0] & 4);
+}
+
 static int cmdline_has(const char *word)
 {
 	char buf[1024];
@@ -110,13 +122,20 @@ static int cmdline_has(const char *word)
 /* Overlay the initramfs with the disk and make that the root. */
 static void persistent_root(void)
 {
-	static char *const mkfs[] = { "/sbin/mke2fs", "-q", "-L", "weblinux", "/dev/wda", NULL };
+	/* ext4 with a journal (e2fsprogs' mke2fs; BusyBox's makes ext2);
+	 * no discard: on the browser disk it writes the whole image */
+	static char *const mkfs[] = { "/sbin/mke2fs", "-q", "-t", "ext4", "-E",
+				      "nodiscard,lazy_itable_init=1", "-L", "weblinux", "/dev/wda", NULL };
+	static char *const fsck[] = { "/sbin/e2fsck", "-p", "/dev/wda", NULL };
+	static char *const fsck_yes[] = { "/sbin/e2fsck", "-y", "/dev/wda", NULL };
+	static char *const add_journal[] = { "/sbin/tune2fs", "-q", "-j", "/dev/wda", NULL };
 	const char *dev = "/dev/wda";
 	int st;
 
 	if (cmdline_has("weblinux.volatile"))
 		return;
 	mnt("devtmpfs", "/dev", "devtmpfs", MS_NOSUID, "mode=0755");
+	mnt("proc", "/proc", "proc", 0, NULL);	/* the e2fsprogs tools read /proc/mounts */
 	st = disk_state(dev);
 	if (st == 0) {
 		fprintf(stderr, "init: formatting the new disk\n");
@@ -130,8 +149,24 @@ static void persistent_root(void)
 			fprintf(stderr, "init: %s has no ext2/3/4 file system; not using it\n", dev);
 		goto out;
 	}
+	/* the tab may have been closed in the middle of a write: check the
+	 * disk (replaying the journal is quick); a disk made before the
+	 * journal was used gets one */
+	if (access(fsck[0], X_OK) == 0) {
+		int r = run(fsck);
+		if (r >= 4) {
+			fprintf(stderr, "init: %s has errors; repairing\n", dev);
+			run(fsck_yes);
+		}
+	}
+	if (!has_journal(dev) && access(add_journal[0], X_OK) == 0) {
+		fprintf(stderr, "init: adding a journal to %s\n", dev);
+		run(add_journal);
+	}
 	mkdir("/.disk", 0700);
-	if (mount(dev, "/.disk", "ext4", MS_NOATIME, NULL) < 0) {
+	/* commit=1: the journal reaches the disk within a second, as the tab
+	 * can be closed at any time */
+	if (mount(dev, "/.disk", "ext4", MS_NOATIME, has_journal(dev) ? "commit=1" : NULL) < 0) {
 		fprintf(stderr, "init: mount %s: %s\n", dev, strerror(errno));
 		goto out;
 	}
@@ -147,6 +182,7 @@ static void persistent_root(void)
 	mkdir("/.root/mnt", 0755);
 	mkdir("/.root/mnt/disk", 0755);
 	mount("/.disk", "/.root/mnt/disk", NULL, MS_MOVE, NULL);
+	umount2("/proc", MNT_DETACH);
 	umount2("/dev", MNT_DETACH);
 	if (chdir("/.root") == 0 && mount(".", "/", NULL, MS_MOVE, NULL) == 0 &&
 	    chroot(".") == 0 && chdir("/") == 0) {
@@ -156,6 +192,7 @@ static void persistent_root(void)
 	fprintf(stderr, "init: switching root: %s\n", strerror(errno));
 	return;
 out:
+	umount2("/proc", MNT_DETACH);
 	umount2("/dev", MNT_DETACH);
 }
 

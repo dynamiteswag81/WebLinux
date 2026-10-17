@@ -83,6 +83,7 @@ pool main/libp/libpng1.6/libpng1.6_1.6.59.orig.tar.gz libpng
 pool main/libj/libjpeg-turbo/libjpeg-turbo_3.1.3.orig.tar.gz libjpeg-turbo
 pool main/e/expat/expat_2.8.3.orig.tar.gz expat
 pool main/f/freetype/freetype_2.14.3+dfsg.orig.tar.xz freetype
+pool main/e/e2fsprogs/e2fsprogs_1.47.0.orig.tar.gz e2fsprogs
 # DejaVu TrueType fonts for NetSurf: the font files of Ubuntu's package
 if [ ! -d src/fonts-dejavu ]; then
 	f=fonts-dejavu-core_2.37-8build1_all.deb

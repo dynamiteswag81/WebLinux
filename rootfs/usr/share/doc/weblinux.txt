@@ -1,0 +1,54 @@
+WebLinux help
+=============
+
+WebLinux is the Linux kernel compiled to WebAssembly (its own architecture
+port, no emulator), running in a browser tab with bash, BusyBox, a desktop,
+the NetSurf web browser and sound.
+
+Saving
+------
+Your files are kept on a disk image inside the browser (the Origin Private
+File System of the page's address), so they are still there next time you
+open the page from the same address. Changes reach that disk within a second
+or two. Everything outside /tmp is saved, but keep your things in /root.
+The "Reset disk" button below the screen erases it.
+
+The desktop
+-----------
+- Double-click an icon to open it. The icons after the first four are the
+  files in /root/Desktop.
+- Right-click almost anything for a menu: the desktop, icons, files in the
+  file manager, window title bars, taskbar buttons, the terminal and the
+  editor.
+- Windows: drag the title bar to move, the bottom-right corner to resize,
+  double-click the title bar (or its middle button) to maximize.
+- Keys: Alt+Tab switches windows, Alt+F4 closes one, Ctrl+Alt+T opens a
+  terminal, the Windows key opens the menu.
+
+Files
+-----
+Enter or double-click opens, Backspace goes up, F2 renames, Delete deletes,
+Ctrl+C / Ctrl+X / Ctrl+V copy, cut and paste files, Ctrl+N makes a folder,
+Ctrl+H shows hidden files. Files open with a program that fits: .html in the
+web browser, .wav plays, .bmp opens in Paint, programs run in a terminal,
+anything else opens in the editor.
+
+Editor
+------
+Ctrl+S saves, Ctrl+Shift+S saves under a new name, Ctrl+O opens a file,
+Ctrl+A selects all, Ctrl+C/X/V copy, cut and paste (shared with the
+terminal). Shift with the arrows selects.
+
+Terminal
+--------
+bash with the BusyBox tools (ls, vi, grep, wget, ...). Select text with the
+mouse to copy it (also to your computer's clipboard); right-click to paste.
+Ctrl+Shift+V pastes from your computer. Shift+PageUp scrolls back.
+Try: play -t 440 1 (a tone), curl, wget, top, vi.
+
+Programs
+--------
+Web browser (NetSurf): Ctrl+U clears the address bar; closing it returns to
+the desktop. Paint saves .bmp pictures (right-click picks a color, Ctrl+Z
+undoes). Also a calculator, Minesweeper (right-click flags), Snake and a task
+manager.

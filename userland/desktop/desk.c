@@ -3,9 +3,11 @@
  *
  * Runs on a VT (tty1) with the text console switched off, draws straight
  * into /dev/fb0 and reads the keyboard and pointer from /dev/input.  One
- * process: a window manager with a taskbar and a start menu, plus built-in
- * applications (terminal, files, editor).  Other graphical programs, like
- * the NetSurf browser, get the whole frame buffer while they run.
+ * process: a window manager with a taskbar, a start menu, pop-up menus and
+ * desktop icons (the launchers plus the files in ~/Desktop), and built-in
+ * applications (termapp.c, files.c, editor.c, apps.c).  Other graphical
+ * programs, like the NetSurf browser, get the whole frame buffer while they
+ * run.
  */
 #define _GNU_SOURCE
 #include <dirent.h>
@@ -29,70 +31,24 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "gfx.h"
-#include "term.h"
+#include "desk.h"
 
-#define TITLE_H		22
-#define TASKBAR_H	30
 #define MAX_WINS	32
 #define MAX_INPUT	8
-#define ROW_H		18
 #define CORNER		14
-
-#define C_DESK_TOP	rgb(0x1d, 0x3b, 0x5c)
-#define C_DESK_BOT	rgb(0x0b, 0x14, 0x22)
-#define C_BAR		rgb(0x16, 0x1b, 0x22)
-#define C_BAR_HI	rgb(0x2a, 0x33, 0x40)
-#define C_TITLE		rgb(0x2b, 0x5d, 0x8c)
-#define C_TITLE_OFF	rgb(0x3a, 0x40, 0x48)
-#define C_TEXT		rgb(0xe8, 0xec, 0xf0)
-#define C_DIM		rgb(0x8a, 0x94, 0xa0)
-#define C_WIN_BG	rgb(0xf4, 0xf5, 0xf7)
-#define C_WIN_FG	rgb(0x1b, 0x1f, 0x24)
-#define C_SEL		rgb(0x3d, 0x7e, 0xc0)
-#define C_BORDER	rgb(0x10, 0x14, 0x1a)
-#define C_ACCENT	rgb(0x4f, 0xc3, 0xf7)
-
-#define MOD_SHIFT	1
-#define MOD_CTRL	2
-#define MOD_ALT		4
-
-enum { M_DOWN, M_UP, M_MOVE, M_WHEEL, M_DOUBLE };
-
-struct key { int code, ch, mods; };
-struct win;
-
-struct app_ops {
-	void (*draw)(struct win *);
-	void (*key)(struct win *, const struct key *);
-	void (*mouse)(struct win *, int x, int y, int ev, int arg);
-	void (*io)(struct win *);
-	void (*resized)(struct win *);
-	void (*close)(struct win *);
-};
-
-struct win {
-	int x, y, w, h;			/* content area on screen */
-	char title[64];
-	struct surface surf;
-	const struct app_ops *ops;
-	void *priv;
-	int fd;				/* polled for input when >= 0 */
-	int dirty, minimized, dead;
-	int drawn_focused;		/* focus state of the last draw */
-};
+#define DESKTOP_DIR	"/root/Desktop"
 
 /* ---------------------------------------------------------------- state */
 
-static struct surface screen, back, wallpaper;
+struct surface screen;
+static struct surface back, wallpaper;
 static uint32_t *fbmem;
 static size_t fblen;
 static struct win *wins[MAX_WINS];	/* z order, last on top */
 static int nwins;
 static int input_fd[MAX_INPUT], ninput;
 static int mx, my, buttons, mods;
-static int need_redraw = 1;
-static int menu_open;
+int need_redraw = 1;
 static pid_t fullscreen_pid;
 static volatile sig_atomic_t got_child;
 static struct { struct win *w; int dx, dy, resize; } drag;
@@ -100,8 +56,9 @@ static struct win *mouse_capture;	/* gets moves and the release after a click */
 static struct { long long t; int x, y; } last_click;
 static int last_clock = -1;
 static long long last_redraw;
+uint32_t desk_top = C_DESK_TOP, desk_bot = C_DESK_BOT;
 
-static long long now_ms(void)
+long long now_ms(void)
 {
 	struct timespec ts;
 
@@ -109,7 +66,7 @@ static long long now_ms(void)
 	return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-static struct win *focus(void)
+struct win *focus(void)
 {
 	for (int i = nwins - 1; i >= 0; i--)
 		if (!wins[i]->minimized)
@@ -131,7 +88,7 @@ static void raise_win(struct win *w)
 	need_redraw = 1;
 }
 
-static struct win *win_new(const char *title, int w, int h, const struct app_ops *ops)
+struct win *win_new(const char *title, int w, int h, const struct app_ops *ops)
 {
 	static int cascade;
 	struct win *win;
@@ -165,6 +122,12 @@ static struct win *win_new(const char *title, int w, int h, const struct app_ops
 	return win;
 }
 
+void win_center(struct win *w)
+{
+	w->x = (screen.w - w->w) / 2;
+	w->y = (screen.h - TASKBAR_H - w->h) / 3 + TITLE_H;
+}
+
 static void win_close(struct win *w)
 {
 	int i;
@@ -186,7 +149,7 @@ static void win_close(struct win *w)
 	need_redraw = 1;
 }
 
-static void win_resize(struct win *w, int nw, int nh)
+void win_resize(struct win *w, int nw, int nh)
 {
 	struct surface s;
 
@@ -208,27 +171,105 @@ static void win_resize(struct win *w, int nw, int nh)
 	need_redraw = 1;
 }
 
+int win_alive(const struct win *w)
+{
+	for (int i = 0; i < nwins; i++)
+		if (wins[i] == w)
+			return 1;
+	return 0;
+}
+
+static void win_toggle_max(struct win *w)
+{
+	if (w->fixed)
+		return;
+	if (w->maximized) {
+		w->maximized = 0;
+		w->x = w->rx;
+		w->y = w->ry;
+		win_resize(w, w->rw, w->rh);
+	} else {
+		w->maximized = 1;
+		w->rx = w->x, w->ry = w->y, w->rw = w->w, w->rh = w->h;
+		w->x = 0;
+		w->y = TITLE_H;
+		win_resize(w, screen.w, screen.h - TASKBAR_H - TITLE_H);
+	}
+	need_redraw = 1;
+}
+
+/* Run a program and wait for it: file operations use BusyBox's cp/mv/rm. */
+int run_wait(char *const argv[])
+{
+	int st;
+	pid_t pid = vfork();
+
+	if (pid == 0) {
+		int fd = open("/dev/null", O_RDWR);
+		if (fd >= 0) {
+			dup2(fd, 0);
+			dup2(fd, 1);
+		}
+		execve(argv[0], argv, child_env);
+		_exit(127);
+	}
+	if (pid < 0)
+		return -1;
+	while (waitpid(pid, &st, 0) < 0)
+		if (errno != EINTR)
+			return -1;
+	return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+}
+
 /* ---------------------------------------------------------------- icons */
 
-static const uint16_t icon_term[16] = {
+const uint16_t icon_term[16] = {
 	0xffff, 0x8001, 0xbffd, 0xa005, 0xa805, 0xa405, 0xa205, 0xa405,
 	0xa8f5, 0xa005, 0xa005, 0xbffd, 0x8001, 0xffff, 0x1ff8, 0x3ffc,
 };
-static const uint16_t icon_folder[16] = {
+const uint16_t icon_folder[16] = {
 	0x0000, 0x7c00, 0x8200, 0x81fe, 0x8001, 0xffff, 0x8001, 0x8001,
 	0x8001, 0x8001, 0x8001, 0x8001, 0x8001, 0xffff, 0x0000, 0x0000,
 };
-static const uint16_t icon_file[16] = {
+const uint16_t icon_file[16] = {
 	0x3fc0, 0x2060, 0x2050, 0x2078, 0x2008, 0x27c8, 0x2008, 0x27c8,
 	0x2008, 0x27c8, 0x2008, 0x2008, 0x2008, 0x3ff8, 0x0000, 0x0000,
 };
-static const uint16_t icon_globe[16] = {
+const uint16_t icon_globe[16] = {
 	0x07e0, 0x1998, 0x2184, 0x4182, 0x7ffe, 0x8181, 0x8181, 0xffff,
 	0x8181, 0x8181, 0x7ffe, 0x4182, 0x2184, 0x1998, 0x07e0, 0x0000,
 };
-static const uint16_t icon_edit[16] = {
+const uint16_t icon_edit[16] = {
 	0x0006, 0x000f, 0x001e, 0x003c, 0x0078, 0x00f0, 0x01e0, 0x03c0,
 	0x0780, 0x0f00, 0x1e00, 0x3c00, 0x7800, 0x7000, 0xe000, 0x0000,
+};
+const uint16_t icon_calc[16] = {
+	0x7ffe, 0x4002, 0x5ffa, 0x500a, 0x5ffa, 0x4002, 0x5b6a, 0x5b6a,
+	0x4002, 0x5b6a, 0x5b6a, 0x4002, 0x5b6a, 0x5b6a, 0x4002, 0x7ffe,
+};
+const uint16_t icon_mine[16] = {
+	0x0100, 0x0100, 0x2108, 0x13d0, 0x0ff0, 0x0e70, 0x1c78, 0xfc7f,
+	0x1ff8, 0x1ff8, 0x0ff0, 0x0ff0, 0x13c8, 0x2104, 0x0100, 0x0100,
+};
+const uint16_t icon_snake[16] = {
+	0x0000, 0x0000, 0x3ffc, 0x3ffc, 0x000c, 0x000c, 0x3ffc, 0x3ffc,
+	0x3000, 0x3000, 0x3ff6, 0x3ff6, 0x0000, 0x0000, 0x0000, 0x0000,
+};
+const uint16_t icon_tasks[16] = {
+	0xffff, 0x8001, 0x8001, 0x8001, 0x8009, 0x8015, 0x8015, 0x8823,
+	0x9423, 0xa241, 0xa241, 0xc181, 0x8001, 0x8001, 0x8001, 0xffff,
+};
+const uint16_t icon_paint[16] = {
+	0x0000, 0x000e, 0x001e, 0x003c, 0x0078, 0x00f0, 0x01e0, 0x03c0,
+	0x0780, 0x0300, 0x3600, 0x7c00, 0x7c00, 0xf800, 0x7000, 0x0000,
+};
+const uint16_t icon_gear[16] = {
+	0x0180, 0x0180, 0x1998, 0x3ffc, 0x1ff8, 0x1c38, 0x3818, 0xf81f,
+	0xf81f, 0x3818, 0x1c38, 0x1ff8, 0x3ffc, 0x1998, 0x0180, 0x0180,
+};
+const uint16_t icon_image[16] = {
+	0xffff, 0x8001, 0x8001, 0x8c01, 0x9e01, 0x8c01, 0x8001, 0x8081,
+	0x81c1, 0x83e1, 0x87f1, 0x8ff9, 0x9ffd, 0x8001, 0xffff, 0x0000,
 };
 /* pointer: outline and fill */
 static const uint16_t cur_out[19] = {
@@ -240,1022 +281,370 @@ static const uint16_t cur_in[19] = {
 	0x7fc0, 0x7800, 0x6800, 0x4c00, 0x0c00, 0x0600, 0x0600, 0x0300, 0x0000,
 };
 
-/* ---------------------------------------------------------------- terminal */
+/* ---------------------------------------------------------------- pop-up menus */
 
-struct termapp {
-	struct term t;
-	int master;
-	pid_t pid;
-	int sel, sx0, sy0, sx1, sy1;	/* selection, in view cells */
-};
+#define POP_MAX		24
+#define POP_ROW		24
+#define POP_SEP		9
 
-/* is view cell (x, y) inside the selection? */
-static int term_selected(const struct termapp *a, int x, int y)
+static struct {
+	int open, x, y, w, h, n, hover;
+	char item[POP_MAX][48];
+	const uint16_t *icon[POP_MAX];
+	void (*fn)(void *, int);
+	void *ctx;
+} pop;
+static int start_menu_open;	/* the open pop-up is the start menu */
+
+static int pop_item_h(int i)
 {
-	int x0 = a->sx0, y0 = a->sy0, x1 = a->sx1, y1 = a->sy1;
-
-	if (!a->sel)
-		return 0;
-	if (y0 > y1 || (y0 == y1 && x0 > x1)) {
-		x0 = a->sx1, y0 = a->sy1, x1 = a->sx0, y1 = a->sy0;
-	}
-	if (y < y0 || y > y1)
-		return 0;
-	if (y == y0 && x < x0)
-		return 0;
-	if (y == y1 && x > x1)
-		return 0;
-	return 1;
+	return strcmp(pop.item[i], "-") ? POP_ROW : POP_SEP;
 }
 
-/* Hand text to the host's clipboard: OSC 52 on the debug console, which
- * the page turns into navigator.clipboard.writeText(). */
-static void host_clipboard(const char *s, int n)
+static void popup_open(int x, int y, const char *const *items, const uint16_t *const *icons,
+		       int n, void (*fn)(void *, int), void *ctx)
 {
-	static const char b64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-	char *out = malloc(n / 3 * 4 + 16);
-	int fd, o = 0;
+	int w = 0;
 
-	if (!out)
-		return;
-	for (int i = 0; i < n; i += 3) {
-		unsigned v = (unsigned char)s[i] << 16;
-		if (i + 1 < n)
-			v |= (unsigned char)s[i + 1] << 8;
-		if (i + 2 < n)
-			v |= (unsigned char)s[i + 2];
-		out[o++] = b64[v >> 18 & 63];
-		out[o++] = b64[v >> 12 & 63];
-		out[o++] = i + 1 < n ? b64[v >> 6 & 63] : '=';
-		out[o++] = i + 2 < n ? b64[v & 63] : '=';
+	if (n > POP_MAX)
+		n = POP_MAX;
+	pop.n = n;
+	pop.h = 8;
+	for (int i = 0; i < n; i++) {
+		snprintf(pop.item[i], sizeof(pop.item[i]), "%s", items[i]);
+		pop.icon[i] = icons ? icons[i] : NULL;
+		int lw = strlen(pop.item[i]) * FONT_W;
+		if (lw > w)
+			w = lw;
+		pop.h += pop_item_h(i);
 	}
-	fd = open("/dev/ttyW0", O_WRONLY | O_NOCTTY);
-	if (fd >= 0) {
-		dprintf(fd, "\033]52;c;%.*s\a", o, out);
-		close(fd);
-	}
-	free(out);
+	pop.w = w + (icons ? 56 : 32);
+	if (pop.w < 140)
+		pop.w = 140;
+	if (x + pop.w > screen.w)
+		x = screen.w - pop.w;
+	if (y + pop.h > screen.h - TASKBAR_H && !start_menu_open)
+		y = y - pop.h >= 0 ? y - pop.h : screen.h - TASKBAR_H - pop.h;
+	pop.x = x < 0 ? 0 : x;
+	pop.y = y < 0 ? 0 : y;
+	pop.fn = fn;
+	pop.ctx = ctx;
+	pop.hover = -1;
+	pop.open = 1;
+	need_redraw = 1;
 }
 
-static void term_copy(struct termapp *a)
+void popup_menu(int x, int y, const char *const *items, int n,
+		void (*fn)(void *ctx, int i), void *ctx)
 {
-	struct term *t = &a->t;
-	char *buf = malloc((size_t)(t->cols + 1) * t->rows + 1);
-	int n = 0;
+	start_menu_open = 0;
+	popup_open(x, y, items, NULL, n, fn, ctx);
+}
 
-	if (!buf)
-		return;
-	for (int y = 0; y < t->rows; y++) {
-		int start = n, any = 0;
-		for (int x = 0; x < t->cols; x++) {
-			if (!term_selected(a, x, y))
-				continue;
-			any = 1;
-			buf[n++] = term_view_cell(t, x, y)->ch;
-		}
-		if (!any)
+static void popup_close(void)
+{
+	pop.open = start_menu_open = 0;
+	need_redraw = 1;
+}
+
+static int pop_enabled(int i)
+{
+	return i >= 0 && i < pop.n && pop.item[i][0] != '!' && strcmp(pop.item[i], "-");
+}
+
+static int pop_at(int x, int y)
+{
+	int yy = pop.y + 4;
+
+	if (x < pop.x || x >= pop.x + pop.w)
+		return -1;
+	for (int i = 0; i < pop.n; i++) {
+		if (y >= yy && y < yy + pop_item_h(i))
+			return i;
+		yy += pop_item_h(i);
+	}
+	return -1;
+}
+
+static void pop_pick(int i)
+{
+	void (*fn)(void *, int) = pop.fn;
+	void *ctx = pop.ctx;
+
+	popup_close();
+	if (fn && i >= 0)
+		fn(ctx, i);
+}
+
+static void draw_popup(void)
+{
+	int y = pop.y + 4;
+
+	fill_alpha(&back, pop.x + 4, pop.y + 4, pop.w, pop.h, 0, 90);
+	fill(&back, pop.x, pop.y, pop.w, pop.h, C_BAR);
+	frame(&back, pop.x, pop.y, pop.w, pop.h, C_BAR_HI);
+	for (int i = 0; i < pop.n; i++) {
+		const char *label = pop.item[i];
+		int tx = pop.x + (pop.icon[i] || start_menu_open ? 36 : 14);
+		if (!strcmp(label, "-")) {
+			fill(&back, pop.x + 8, y + POP_SEP / 2, pop.w - 16, 1, C_BAR_HI);
+			y += POP_SEP;
 			continue;
-		while (n > start && buf[n - 1] == ' ')
-			n--;	/* no trailing blanks */
-		buf[n++] = '\n';
-	}
-	if (n && buf[n - 1] == '\n' && a->sy0 == a->sy1)
-		n--;
-	if (n)
-		host_clipboard(buf, n);
-	free(buf);
-}
-
-static void term_draw(struct win *w)
-{
-	struct termapp *a = w->priv;
-	struct term *t = &a->t;
-	int has_focus = focus() == w;
-
-	fill(&w->surf, 0, 0, w->w, w->h, term_palette[0]);
-	for (int y = 0; y < t->rows; y++) {
-		for (int x = 0; x < t->cols; x++) {
-			struct cell c = *term_view_cell(t, x, y);
-			int fg = c.fg, bg = c.bg;
-			if ((c.attr & ATTR_BOLD) && fg < 8)
-				fg += 8;
-			if (!!(c.attr & ATTR_REVERSE) != term_selected(a, x, y)) {
-				int tmp = fg;
-				fg = bg;
-				bg = tmp;
-			}
-			if (x == t->cx && y == t->cy + t->view && t->cursor_on && has_focus) {
-				int tmp = fg;
-				fg = bg;
-				bg = tmp == bg ? 7 : tmp;
-			}
-			glyph(&w->surf, 2 + x * FONT_W, 2 + y * FONT_H, c.ch,
-			      term_palette[fg], term_palette[bg]);
-			if (c.attr & ATTR_UNDERLINE)
-				fill(&w->surf, 2 + x * FONT_W, 2 + y * FONT_H + 14, FONT_W, 1,
-				     term_palette[fg]);
 		}
-	}
-	if (!has_focus && t->cursor_on && t->cy + t->view < t->rows)
-		frame(&w->surf, 2 + t->cx * FONT_W, 2 + (t->cy + t->view) * FONT_H, FONT_W, FONT_H,
-		      term_palette[7]);
-	if (t->view) {
-		char info[32];
-		snprintf(info, sizeof(info), " scrolled back %d ", t->view);
-		int iw = strlen(info) * FONT_W;
-		fill(&w->surf, w->w - iw - 4, 2, iw, FONT_H, term_palette[4]);
-		text(&w->surf, w->w - iw - 4, 2, info, term_palette[15], 0);
-	}
-}
-
-static void term_send(struct termapp *a, const char *s, int n)
-{
-	while (n > 0) {
-		int k = write(a->master, s, n);
-		if (k <= 0)
-			break;
-		s += k;
-		n -= k;
+		if (i == pop.hover && pop_enabled(i))
+			fill(&back, pop.x + 2, y, pop.w - 4, POP_ROW, C_SEL);
+		if (pop.icon[i])
+			bitmap(&back, pop.x + 10, y + 4, pop.icon[i], 16, 16, C_ACCENT);
+		if (label[0] == '!')
+			text(&back, tx, y + 4, label + 1, C_DIM, pop.w - 20);
+		else
+			text(&back, tx, y + 4, label, C_TEXT, pop.w - 20);
+		y += POP_ROW;
 	}
 }
 
-static void term_key(struct win *w, const struct key *k)
+static int popup_key(int code)
 {
-	struct termapp *a = w->priv;
-	const char *seq = NULL;
-	char buf[8];
-	int app = a->t.app_cursor;
+	int i = pop.hover;
 
-	/* Shift+PageUp/PageDown scroll back; any other key returns to live */
-	if ((k->mods & MOD_SHIFT) && (k->code == KEY_PAGEUP || k->code == KEY_PAGEDOWN)) {
-		term_scroll_view(&a->t, (k->code == KEY_PAGEUP ? 1 : -1) * (a->t.rows - 1));
-		w->dirty = need_redraw = 1;
-		return;
-	}
-	if (a->t.view && k->code != KEY_LEFTSHIFT && k->code != KEY_RIGHTSHIFT) {
-		term_scroll_view(&a->t, -a->t.view);
-		w->dirty = need_redraw = 1;
-	}
-
-	switch (k->code) {
-	case KEY_UP: seq = app ? "\033OA" : "\033[A"; break;
-	case KEY_DOWN: seq = app ? "\033OB" : "\033[B"; break;
-	case KEY_RIGHT: seq = app ? "\033OC" : "\033[C"; break;
-	case KEY_LEFT: seq = app ? "\033OD" : "\033[D"; break;
-	case KEY_HOME: seq = "\033[H"; break;
-	case KEY_END: seq = "\033[F"; break;
-	case KEY_PAGEUP: seq = "\033[5~"; break;
-	case KEY_PAGEDOWN: seq = "\033[6~"; break;
-	case KEY_INSERT: seq = "\033[2~"; break;
-	case KEY_DELETE: seq = "\033[3~"; break;
-	case KEY_F1: seq = "\033OP"; break;
-	case KEY_F2: seq = "\033OQ"; break;
-	case KEY_F3: seq = "\033OR"; break;
-	case KEY_F4: seq = "\033OS"; break;
-	case KEY_ENTER: case KEY_KPENTER: seq = "\r"; break;
-	case KEY_BACKSPACE: seq = "\177"; break;
-	case KEY_TAB: seq = "\t"; break;
-	case KEY_ESC: seq = "\033"; break;
-	}
-	if (seq) {
-		term_send(a, seq, strlen(seq));
-		return;
-	}
-	if (!k->ch)
-		return;
-	int n = 0, c = k->ch;
-	if (k->mods & MOD_ALT)
-		buf[n++] = '\033';
-	if (k->mods & MOD_CTRL) {
-		if (c >= 'a' && c <= 'z')
-			c -= 'a' - 1;
-		else if (c >= '@' && c <= '_')
-			c -= '@';
-		else if (c == ' ')
-			c = 0;
-	}
-	buf[n++] = c;
-	term_send(a, buf, n);
-}
-
-static void term_io(struct win *w)
-{
-	struct termapp *a = w->priv;
-	unsigned char buf[4096];
-	int n = read(a->master, buf, sizeof(buf));
-
-	if (n <= 0) {
-		if (n < 0 && (errno == EAGAIN || errno == EINTR))
-			return;
-		w->dead = 1;	/* the shell is gone */
-		return;
-	}
-	term_write(&a->t, buf, n);
-	if (a->t.nreply) {
-		term_send(a, a->t.reply, a->t.nreply);
-		a->t.nreply = 0;
-	}
-	if (a->t.dirty) {
-		a->t.dirty = 0;
-		w->dirty = 1;
-		need_redraw = 1;
-	}
-}
-
-static void term_resized(struct win *w)
-{
-	struct termapp *a = w->priv;
-	struct winsize ws = { 0 };
-
-	ws.ws_col = (w->w - 4) / FONT_W;
-	ws.ws_row = (w->h - 4) / FONT_H;
-	if (ws.ws_col < 2 || ws.ws_row < 2)
-		return;
-	term_resize(&a->t, ws.ws_col, ws.ws_row);
-	ioctl(a->master, TIOCSWINSZ, &ws);
-}
-
-static void term_close(struct win *w)
-{
-	struct termapp *a = w->priv;
-
-	if (a->pid > 0)
-		kill(-a->pid, SIGHUP);
-	close(a->master);
-	term_free(&a->t);
-	free(a);
-}
-
-static void term_mouse(struct win *w, int x, int y, int ev, int arg)
-{
-	struct termapp *a = w->priv;
-	int cx = (x - 2) / FONT_W, cy = (y - 2) / FONT_H;
-
-	if (cx < 0)
-		cx = 0;
-	if (cx >= a->t.cols)
-		cx = a->t.cols - 1;
-	if (cy < 0)
-		cy = 0;
-	if (cy >= a->t.rows)
-		cy = a->t.rows - 1;
-	switch (ev) {
-	case M_WHEEL:
-		if (!a->t.using_alt)
-			term_scroll_view(&a->t, arg * 3);
-		break;
-	case M_DOWN:
-	case M_DOUBLE:
-		/* drag to select; the selection is copied to the host */
-		a->sel = 0;
-		a->sx0 = a->sx1 = cx;
-		a->sy0 = a->sy1 = cy;
-		break;
-	case M_MOVE:
-		a->sel = 1;
-		a->sx1 = cx;
-		a->sy1 = cy;
-		break;
-	case M_UP:
-		if (a->sel)
-			term_copy(a);
-		break;
-	}
-	w->dirty = need_redraw = 1;
-}
-
-static const struct app_ops term_ops = {
-	.draw = term_draw, .key = term_key, .io = term_io, .mouse = term_mouse,
-	.resized = term_resized, .close = term_close,
-};
-
-static char *child_env[] = {
-	"TERM=xterm", "HOME=/root", "SHELL=/bin/bash", "USER=root", "LOGNAME=root",
-	"PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", NULL, NULL
-};
-
-static void open_terminal(const char *cmd)
-{
-	struct termapp *a = calloc(1, sizeof(*a));
-	struct win *w;
-	struct winsize ws = { 0 };
-	char *pts;
-
-	if (!a)
-		return;
-	a->master = posix_openpt(O_RDWR | O_NOCTTY);
-	if (a->master < 0 || grantpt(a->master) || unlockpt(a->master) ||
-	    !(pts = ptsname(a->master))) {
-		if (a->master >= 0)
-			close(a->master);
-		free(a);
-		return;
-	}
-	w = win_new("Terminal", 80 * FONT_W + 4, 25 * FONT_H + 4, &term_ops);
-	if (!w) {
-		close(a->master);
-		free(a);
-		return;
-	}
-	w->priv = a;
-	w->fd = a->master;
-	ws.ws_col = (w->w - 4) / FONT_W;
-	ws.ws_row = (w->h - 4) / FONT_H;
-	term_init(&a->t, ws.ws_col, ws.ws_row);
-	ioctl(a->master, TIOCSWINSZ, &ws);
-	fcntl(a->master, F_SETFL, O_NONBLOCK);
-
-	char *argv[] = { "/bin/bash", "--login", NULL, NULL, NULL };
-	if (cmd) {
-		argv[1] = "-c";
-		argv[2] = (char *)cmd;
-	}
-	a->pid = vfork();
-	if (a->pid == 0) {
-		setsid();
-		int s = open(pts, O_RDWR);
-		if (s < 0)
-			_exit(126);
-		ioctl(s, TIOCSCTTY, 0);
-		dup2(s, 0);
-		dup2(s, 1);
-		dup2(s, 2);
-		if (s > 2)
-			close(s);
-		execve(argv[0], argv, child_env);
-		_exit(127);
-	}
-}
-
-/* ---------------------------------------------------------------- files */
-
-struct entry { char name[NAME_MAX + 1]; int dir; long long size; };
-
-struct files {
-	char path[PATH_MAX];
-	struct entry *ent;
-	int n, sel, top;
-};
-
-static void open_editor(const char *path);
-static void open_files(const char *path);
-static void open_terminal(const char *cmd);
-static void browse(const char *url);
-
-static int has_ext(const char *name, const char *ext)
-{
-	size_t n = strlen(name), e = strlen(ext);
-	return n > e && !strcasecmp(name + n - e, ext);
-}
-
-/* open a file with the program for its type */
-static void open_path(const char *p)
-{
-	char cmd[PATH_MAX + 64];
-
-	if (has_ext(p, ".html") || has_ext(p, ".htm")) {
-		snprintf(cmd, sizeof(cmd), "file://%s", p);
-		browse(cmd);
-	} else if (has_ext(p, ".wav")) {
-		/* quoted for the shell: no single quotes in the name */
-		if (strchr(p, '\''))
-			return;
-		snprintf(cmd, sizeof(cmd), "play '%s'; sleep 1", p);
-		open_terminal(cmd);
-	} else {
-		open_editor(p);
-	}
-}
-
-static int entcmp(const void *a, const void *b)
-{
-	const struct entry *x = a, *y = b;
-
-	if (x->dir != y->dir)
-		return y->dir - x->dir;
-	return strcmp(x->name, y->name);
-}
-
-static void files_load(struct win *w)
-{
-	struct files *f = w->priv;
-	DIR *d = opendir(f->path);
-	struct dirent *de;
-	int cap = 0;
-
-	free(f->ent);
-	f->ent = NULL;
-	f->n = f->sel = f->top = 0;
-	snprintf(w->title, sizeof(w->title), "Files - %s", f->path);
-	if (strcmp(f->path, "/")) {
-		f->ent = calloc(cap = 64, sizeof(*f->ent));
-		strcpy(f->ent[0].name, "..");
-		f->ent[0].dir = 1;
-		f->n = 1;
-	}
-	while (d && (de = readdir(d))) {
-		char full[PATH_MAX * 2];
-		struct stat st;
-
-		if (de->d_name[0] == '.' && (!de->d_name[1] || !strcmp(de->d_name, "..")))
-			continue;
-		if (f->n == cap) {
-			struct entry *e = realloc(f->ent, sizeof(*e) * (cap = cap ? cap * 2 : 64));
-			if (!e)
+	switch (code) {
+	case KEY_ESC:
+		popup_close();
+		return 1;
+	case KEY_UP:
+	case KEY_DOWN:
+		for (int k = 0; k < pop.n; k++) {
+			i = code == KEY_UP ? (i <= 0 ? pop.n - 1 : i - 1) : (i + 1) % pop.n;
+			if (pop_enabled(i))
 				break;
-			f->ent = e;
 		}
-		snprintf(full, sizeof(full), "%s/%s", f->path, de->d_name);
-		snprintf(f->ent[f->n].name, sizeof(f->ent[0].name), "%s", de->d_name);
-		f->ent[f->n].dir = stat(full, &st) == 0 && S_ISDIR(st.st_mode);
-		f->ent[f->n].size = st.st_size;
-		f->n++;
+		pop.hover = i;
+		need_redraw = 1;
+		return 1;
+	case KEY_ENTER:
+	case KEY_KPENTER:
+		if (pop_enabled(i))
+			pop_pick(i);
+		return 1;
 	}
-	if (d)
-		closedir(d);
-	qsort(f->ent + (strcmp(f->path, "/") ? 1 : 0), f->n - (strcmp(f->path, "/") ? 1 : 0),
-	      sizeof(*f->ent), entcmp);
-	w->dirty = need_redraw = 1;
+	return 0;
 }
 
-static void files_draw(struct win *w)
+/* ---------------------------------------------------------------- dialogs */
+
+static void draw_button(struct surface *s, int x, int y, int w, const char *label, int primary)
 {
-	struct files *f = w->priv;
-	int rows = (w->h - ROW_H - 4) / ROW_H;
-	char size[32];
+	int lw = strlen(label) * FONT_W;
+
+	fill(s, x, y, w, 24, primary ? C_SEL : rgb(0xdd, 0xe1, 0xe6));
+	frame(s, x, y, w, 24, primary ? rgb(0x2c, 0x5f, 0x94) : rgb(0xb4, 0xbb, 0xc4));
+	text(s, x + (w - lw) / 2, y + 4, label, primary ? C_TEXT : C_WIN_FG, w - 4);
+}
+
+static int in_box(int x, int y, int bx, int by, int bw, int bh)
+{
+	return x >= bx && x < bx + bw && y >= by && y < by + bh;
+}
+
+struct prompt {
+	char label[96];
+	char text[512];
+	int len;
+	void (*done)(void *, const char *);
+	void *ctx;
+};
+
+static void prompt_draw(struct win *w)
+{
+	struct prompt *p = w->priv;
+	int fw = w->w - 24, shown = fw / FONT_W - 2;
+	const char *t = p->text + (p->len > shown ? p->len - shown : 0);
 
 	fill(&w->surf, 0, 0, w->w, w->h, C_WIN_BG);
-	fill(&w->surf, 0, 0, w->w, ROW_H + 4, rgb(0xe2, 0xe6, 0xea));
-	text(&w->surf, 6, 3, f->path, C_WIN_FG, w->w - 12);
-	for (int i = 0; i < rows && f->top + i < f->n; i++) {
-		struct entry *e = &f->ent[f->top + i];
-		int y = ROW_H + 4 + i * ROW_H;
-		uint32_t fg = C_WIN_FG;
-
-		if (f->top + i == f->sel) {
-			fill(&w->surf, 0, y, w->w, ROW_H, C_SEL);
-			fg = C_TEXT;
-		}
-		bitmap(&w->surf, 6, y + 1, e->dir ? icon_folder : icon_file, 16, 16,
-		       e->dir ? rgb(0xd0, 0x9a, 0x2a) : fg);
-		text(&w->surf, 28, y + 1, e->name, fg, w->w - 130);
-		if (!e->dir) {
-			if (e->size < 10240)
-				snprintf(size, sizeof(size), "%lld B", e->size);
-			else if (e->size < 10 << 20)
-				snprintf(size, sizeof(size), "%lld KiB", e->size >> 10);
-			else
-				snprintf(size, sizeof(size), "%lld MiB", e->size >> 20);
-			text(&w->surf, w->w - 90, y + 1, size, fg == C_TEXT ? fg : C_DIM, 0);
-		}
-	}
+	text(&w->surf, 12, 12, p->label, C_WIN_FG, w->w - 24);
+	fill(&w->surf, 12, 34, fw, FONT_H + 8, rgb(255, 255, 255));
+	frame(&w->surf, 12, 34, fw, FONT_H + 8, C_SEL);
+	int tw = text(&w->surf, 16, 38, t, C_WIN_FG, fw - 8);
+	fill(&w->surf, 16 + tw, 38, 2, FONT_H, C_SEL);
+	draw_button(&w->surf, w->w - 192, w->h - 34, 84, "OK", 1);
+	draw_button(&w->surf, w->w - 96, w->h - 34, 84, "Cancel", 0);
 }
 
-static void files_open(struct win *w)
+static void prompt_finish(struct win *w, int ok)
 {
-	struct files *f = w->priv;
-	struct entry *e;
-	char p[PATH_MAX * 2];
+	struct prompt *p = w->priv;
 
-	if (f->sel < 0 || f->sel >= f->n)
-		return;
-	e = &f->ent[f->sel];
-	if (!strcmp(e->name, "..")) {
-		char *s = strrchr(f->path, '/');
-		if (s == f->path)
-			s[1] = 0;
-		else if (s)
-			*s = 0;
-		files_load(w);
+	w->dead = 1;
+	if (ok && p->len)
+		p->done(p->ctx, p->text);
+}
+
+static void prompt_key(struct win *w, const struct key *k)
+{
+	struct prompt *p = w->priv;
+
+	if (k->code == KEY_ENTER || k->code == KEY_KPENTER) {
+		prompt_finish(w, 1);
 		return;
 	}
-	snprintf(p, sizeof(p), "%s%s%s", f->path, strcmp(f->path, "/") ? "/" : "", e->name);
-	if (e->dir) {
-		snprintf(f->path, sizeof(f->path), "%s", p);
-		files_load(w);
-	} else {
-		open_path(p);
-	}
-}
-
-static void files_scroll_to_sel(struct win *w)
-{
-	struct files *f = w->priv;
-	int rows = (w->h - ROW_H - 4) / ROW_H;
-
-	if (f->sel < f->top)
-		f->top = f->sel;
-	if (f->sel >= f->top + rows)
-		f->top = f->sel - rows + 1;
-	w->dirty = need_redraw = 1;
-}
-
-static void files_key(struct win *w, const struct key *k)
-{
-	struct files *f = w->priv;
-
-	switch (k->code) {
-	case KEY_UP: if (f->sel > 0) f->sel--; break;
-	case KEY_DOWN: if (f->sel < f->n - 1) f->sel++; break;
-	case KEY_HOME: f->sel = 0; break;
-	case KEY_END: f->sel = f->n - 1; break;
-	case KEY_ENTER: files_open(w); return;
-	case KEY_BACKSPACE:
-		if (f->n && !strcmp(f->ent[0].name, "..")) {
-			f->sel = 0;
-			files_open(w);
-		}
-		return;
-	case KEY_F5: files_load(w); return;
-	default: return;
-	}
-	files_scroll_to_sel(w);
-}
-
-static void files_mouse(struct win *w, int x, int y, int ev, int arg)
-{
-	struct files *f = w->priv;
-	int i = f->top + (y - ROW_H - 4) / ROW_H;
-
-	if (ev == M_WHEEL) {
-		f->top -= arg * 3;
-		if (f->top > f->n - 1)
-			f->top = f->n - 1;
-		if (f->top < 0)
-			f->top = 0;
-		w->dirty = need_redraw = 1;
+	if (k->code == KEY_ESC) {
+		prompt_finish(w, 0);
 		return;
 	}
-	if ((ev != M_DOWN && ev != M_DOUBLE) || y < ROW_H + 4 || i >= f->n)
-		return;
-	f->sel = i;
-	w->dirty = need_redraw = 1;
-	if (ev == M_DOUBLE)
-		files_open(w);
+	if (k->code == KEY_BACKSPACE) {
+		if (p->len)
+			p->text[--p->len] = 0;
+	} else if ((k->mods & MOD_CTRL) && k->ch == 'u') {
+		p->len = 0;
+		p->text[0] = 0;
+	} else if (k->ch >= 32 && k->ch < 127 && !(k->mods & MOD_CTRL) &&
+		   p->len < (int)sizeof(p->text) - 1) {
+		p->text[p->len++] = k->ch;
+		p->text[p->len] = 0;
+	}
+	win_dirty(w);
 }
 
-static void files_close(struct win *w)
+static void prompt_mouse(struct win *w, int x, int y, int ev, int arg)
 {
-	struct files *f = w->priv;
-
-	free(f->ent);
-	free(f);
+	(void)arg;
+	if (ev != M_DOWN && ev != M_DOUBLE)
+		return;
+	if (in_box(x, y, w->w - 192, w->h - 34, 84, 24))
+		prompt_finish(w, 1);
+	else if (in_box(x, y, w->w - 96, w->h - 34, 84, 24))
+		prompt_finish(w, 0);
 }
 
-static const struct app_ops files_ops = {
-	.draw = files_draw, .key = files_key, .mouse = files_mouse, .close = files_close,
+static void prompt_close(struct win *w)
+{
+	free(w->priv);
+}
+
+static const struct app_ops prompt_ops = {
+	.draw = prompt_draw, .key = prompt_key, .mouse = prompt_mouse, .close = prompt_close,
 };
 
-static void open_files(const char *path)
+void open_prompt(const char *title, const char *label, const char *init,
+		 void (*done)(void *, const char *), void *ctx)
 {
-	struct files *f = calloc(1, sizeof(*f));
+	struct prompt *p = calloc(1, sizeof(*p));
 	struct win *w;
 
-	if (!f)
+	if (!p)
 		return;
-	snprintf(f->path, sizeof(f->path), "%s", path);
-	w = win_new("Files", 460, 420, &files_ops);
+	snprintf(p->label, sizeof(p->label), "%s", label);
+	snprintf(p->text, sizeof(p->text), "%s", init);
+	p->len = strlen(p->text);
+	p->done = done;
+	p->ctx = ctx;
+	w = win_new(title, 480, 116, &prompt_ops);
 	if (!w) {
-		free(f);
+		free(p);
 		return;
 	}
-	w->priv = f;
-	files_load(w);
+	w->priv = p;
+	w->fixed = 1;
+	win_center(w);
 }
 
-/* ---------------------------------------------------------------- editor */
-
-struct editor {
-	char path[PATH_MAX];
-	char **line;
-	int n, cap;
-	int cx, cy, top, left;
-	int modified;
-	int sel, ax, ay;		/* selection from the anchor to the cursor */
-	char msg[80];
+struct message {
+	char text[512];
+	void (*yes)(void *);
+	void *ctx;
 };
 
-static char *clip;	/* the desktop's clipboard (also sent to the host) */
-
-static void ed_sel_range(const struct editor *e, int *x0, int *y0, int *x1, int *y1)
+static void message_draw(struct win *w)
 {
-	if (e->ay < e->cy || (e->ay == e->cy && e->ax <= e->cx)) {
-		*x0 = e->ax, *y0 = e->ay, *x1 = e->cx, *y1 = e->cy;
+	struct message *m = w->priv;
+	int y = 14;
+
+	fill(&w->surf, 0, 0, w->w, w->h, C_WIN_BG);
+	/* one line per '\n' */
+	for (const char *s = m->text; *s && y < w->h - 50; y += FONT_H + 2) {
+		const char *nl = strchr(s, '\n');
+		int n = nl ? nl - s : (int)strlen(s);
+		char line[128];
+		snprintf(line, sizeof(line), "%.*s", n < 127 ? n : 127, s);
+		text(&w->surf, 14, y, line, C_WIN_FG, w->w - 28);
+		s += n + !!nl;
+	}
+	if (m->yes) {
+		draw_button(&w->surf, w->w - 192, w->h - 34, 84, "Yes", 1);
+		draw_button(&w->surf, w->w - 96, w->h - 34, 84, "No", 0);
 	} else {
-		*x0 = e->cx, *y0 = e->cy, *x1 = e->ax, *y1 = e->ay;
+		draw_button(&w->surf, w->w - 96, w->h - 34, 84, "OK", 1);
 	}
 }
 
-static int ed_selected(const struct editor *e, int x, int y)
+static void message_finish(struct win *w, int yes)
 {
-	int x0, y0, x1, y1;
+	struct message *m = w->priv;
 
-	if (!e->sel)
-		return 0;
-	ed_sel_range(e, &x0, &y0, &x1, &y1);
-	if (y < y0 || y > y1)
-		return 0;
-	return !(y == y0 && x < x0) && !(y == y1 && x >= x1);
+	w->dead = 1;
+	if (yes && m->yes)
+		m->yes(m->ctx);
 }
 
-static char *ed_sel_text(const struct editor *e)
+static void message_key(struct win *w, const struct key *k)
 {
-	int x0, y0, x1, y1;
-	size_t len = 0, o = 0;
-	char *t;
-
-	ed_sel_range(e, &x0, &y0, &x1, &y1);
-	for (int y = y0; y <= y1; y++)
-		len += strlen(e->line[y]) + 1;
-	t = malloc(len + 1);
-	if (!t)
-		return NULL;
-	for (int y = y0; y <= y1; y++) {
-		const char *l = e->line[y];
-		int a = y == y0 ? x0 : 0, b = y == y1 ? x1 : (int)strlen(l);
-		memcpy(t + o, l + a, b - a);
-		o += b - a;
-		if (y < y1)
-			t[o++] = '\n';
-	}
-	t[o] = 0;
-	return t;
+	if (k->code == KEY_ENTER || k->code == KEY_KPENTER || k->ch == 'y')
+		message_finish(w, 1);
+	else if (k->code == KEY_ESC || k->ch == 'n')
+		message_finish(w, 0);
 }
 
-static void ed_delete_sel(struct editor *e)
+static void message_mouse(struct win *w, int x, int y, int ev, int arg)
 {
-	int x0, y0, x1, y1;
+	struct message *m = w->priv;
 
-	if (!e->sel)
+	(void)arg;
+	if (ev != M_DOWN && ev != M_DOUBLE)
 		return;
-	ed_sel_range(e, &x0, &y0, &x1, &y1);
-	char *first = e->line[y0], *last = e->line[y1];
-	char *j = malloc(x0 + strlen(last + x1) + 1);
-	if (!j)
-		return;
-	memcpy(j, first, x0);
-	strcpy(j + x0, last + x1);
-	for (int y = y0; y <= y1; y++)
-		free(e->line[y]);
-	e->line[y0] = j;
-	memmove(&e->line[y0 + 1], &e->line[y1 + 1], sizeof(*e->line) * (e->n - y1 - 1));
-	e->n -= y1 - y0;
-	e->cx = x0;
-	e->cy = y0;
-	e->sel = 0;
-	e->modified = 1;
+	if (m->yes && in_box(x, y, w->w - 192, w->h - 34, 84, 24))
+		message_finish(w, 1);
+	else if (in_box(x, y, w->w - 96, w->h - 34, 84, 24))
+		message_finish(w, 0);
 }
 
-static void ed_insert_line(struct editor *e, int at, const char *s, int len);
-
-/* insert text with newlines at the cursor */
-static void ed_insert_text(struct editor *e, const char *t)
+static void message_close(struct win *w)
 {
-	while (*t) {
-		const char *nl = strchr(t, '\n');
-		int n = nl ? nl - t : (int)strlen(t);
-		char *l = e->line[e->cy];
-		int len = strlen(l);
-		char *j = realloc(l, len + n + 1);
-		if (!j)
-			return;
-		memmove(j + e->cx + n, j + e->cx, len - e->cx + 1);
-		memcpy(j + e->cx, t, n);
-		e->line[e->cy] = j;
-		e->cx += n;
-		t += n;
-		if (*t == '\n') {
-			ed_insert_line(e, e->cy + 1, j + e->cx, strlen(j + e->cx));
-			e->line[e->cy][e->cx] = 0;
-			e->cy++;
-			e->cx = 0;
-			t++;
-		}
-	}
-	e->modified = 1;
+	free(w->priv);
 }
 
-static void ed_title(struct win *w)
-{
-	struct editor *e = w->priv;
-	const char *base = strrchr(e->path, '/');
-
-	snprintf(w->title, sizeof(w->title), "%s%s - Editor", e->modified ? "*" : "",
-		 e->path[0] ? (base ? base + 1 : e->path) : "untitled");
-}
-
-static void ed_insert_line(struct editor *e, int at, const char *s, int len)
-{
-	if (e->n == e->cap) {
-		char **l = realloc(e->line, sizeof(*l) * (e->cap = e->cap ? e->cap * 2 : 64));
-		if (!l)
-			return;
-		e->line = l;
-	}
-	memmove(&e->line[at + 1], &e->line[at], sizeof(*e->line) * (e->n - at));
-	e->line[at] = strndup(s, len);
-	e->n++;
-}
-
-static void ed_load(struct editor *e)
-{
-	FILE *fp = e->path[0] ? fopen(e->path, "r") : NULL;
-	char *buf = NULL;
-	size_t cap = 0;
-	ssize_t len;
-
-	while (fp && (len = getline(&buf, &cap, fp)) >= 0) {
-		while (len && (buf[len - 1] == '\n' || buf[len - 1] == '\r'))
-			len--;
-		ed_insert_line(e, e->n, buf, len);
-	}
-	free(buf);
-	if (fp)
-		fclose(fp);
-	if (!e->n)
-		ed_insert_line(e, 0, "", 0);
-}
-
-static void ed_save(struct win *w)
-{
-	struct editor *e = w->priv;
-	FILE *fp;
-
-	if (!e->path[0]) {
-		snprintf(e->path, sizeof(e->path), "/root/untitled.txt");
-	}
-	fp = fopen(e->path, "w");
-	if (!fp) {
-		snprintf(e->msg, sizeof(e->msg), "can't save: %s", strerror(errno));
-		return;
-	}
-	for (int i = 0; i < e->n; i++)
-		fprintf(fp, "%s\n", e->line[i]);
-	if (fclose(fp)) {
-		snprintf(e->msg, sizeof(e->msg), "can't save: %s", strerror(errno));
-		return;
-	}
-	sync();
-	e->modified = 0;
-	snprintf(e->msg, sizeof(e->msg), "saved %d lines", e->n);
-	ed_title(w);
-}
-
-static void ed_draw(struct win *w)
-{
-	struct editor *e = w->priv;
-	int rows = (w->h - ROW_H - 4) / FONT_H, cols = (w->w - 8) / FONT_W;
-	char status[160];
-
-	if (e->cy < e->top)
-		e->top = e->cy;
-	if (e->cy >= e->top + rows)
-		e->top = e->cy - rows + 1;
-	if (e->cx < e->left)
-		e->left = e->cx;
-	if (e->cx >= e->left + cols)
-		e->left = e->cx - cols + 1;
-	fill(&w->surf, 0, 0, w->w, w->h, rgb(0xff, 0xff, 0xff));
-	for (int i = 0; i < rows && e->top + i < e->n; i++) {
-		const char *l = e->line[e->top + i];
-		int len = strlen(l);
-		for (int c = 0; c < cols && e->left + c <= len; c++) {
-			int on = ed_selected(e, e->left + c, e->top + i);
-			if (e->left + c == len) {	/* the line break */
-				if (on && e->top + i < e->n - 1)
-					fill(&w->surf, 4 + c * FONT_W, 2 + i * FONT_H, FONT_W / 2, FONT_H, C_SEL);
-				break;
-			}
-			glyph(&w->surf, 4 + c * FONT_W, 2 + i * FONT_H, (unsigned char)l[e->left + c],
-			      on ? rgb(255, 255, 255) : C_WIN_FG, on ? C_SEL : TRANSPARENT);
-		}
-	}
-	if (focus() == w)
-		fill(&w->surf, 4 + (e->cx - e->left) * FONT_W, 2 + (e->cy - e->top) * FONT_H,
-		     2, FONT_H, C_SEL);
-	fill(&w->surf, 0, w->h - ROW_H, w->w, ROW_H, rgb(0xe2, 0xe6, 0xea));
-	snprintf(status, sizeof(status), "Ln %d, Col %d   Ctrl+S save, Ctrl+C/X/V   %s",
-		 e->cy + 1, e->cx + 1, e->msg);
-	text(&w->surf, 6, w->h - ROW_H + 1, status, C_WIN_FG, w->w - 12);
-}
-
-static void ed_key(struct win *w, const struct key *k)
-{
-	struct editor *e = w->priv;
-	int rows = (w->h - ROW_H - 4) / FONT_H;
-	char *l = e->line[e->cy];
-	int len = strlen(l);
-
-	e->msg[0] = 0;
-	if ((k->mods & MOD_CTRL) && (k->ch == 's' || k->ch == 'S')) {
-		ed_save(w);
-		goto out;
-	}
-	if ((k->mods & MOD_CTRL) && (k->ch == 'c' || k->ch == 'x') && e->sel) {
-		free(clip);
-		clip = ed_sel_text(e);
-		if (clip)
-			host_clipboard(clip, strlen(clip));
-		if (k->ch == 'x')
-			ed_delete_sel(e);
-		goto out;
-	}
-	if ((k->mods & MOD_CTRL) && k->ch == 'v') {
-		ed_delete_sel(e);
-		if (clip)
-			ed_insert_text(e, clip);
-		goto out;
-	}
-	if ((k->mods & MOD_CTRL) && k->ch == 'a') {
-		e->ax = e->ay = 0;
-		e->cy = e->n - 1;
-		e->cx = strlen(e->line[e->cy]);
-		e->sel = 1;
-		goto out;
-	}
-	{
-		int moving = k->code == KEY_LEFT || k->code == KEY_RIGHT || k->code == KEY_UP ||
-			     k->code == KEY_DOWN || k->code == KEY_HOME || k->code == KEY_END ||
-			     k->code == KEY_PAGEUP || k->code == KEY_PAGEDOWN;
-		if (moving && (k->mods & MOD_SHIFT)) {
-			if (!e->sel) {
-				e->sel = 1;
-				e->ax = e->cx;
-				e->ay = e->cy;
-			}
-		} else if (moving) {
-			e->sel = 0;
-		} else if (e->sel && (k->code == KEY_BACKSPACE || k->code == KEY_DELETE)) {
-			ed_delete_sel(e);
-			goto out;
-		} else if (e->sel && (k->code == KEY_ENTER || k->code == KEY_TAB ||
-				      (k->ch >= 32 && k->ch < 127 && !(k->mods & (MOD_CTRL | MOD_ALT))))) {
-			ed_delete_sel(e);
-			l = e->line[e->cy];
-			len = strlen(l);
-		}
-	}
-	switch (k->code) {
-	case KEY_LEFT:
-		if (e->cx > 0)
-			e->cx--;
-		else if (e->cy > 0)
-			e->cx = strlen(e->line[--e->cy]);
-		goto out;
-	case KEY_RIGHT:
-		if (e->cx < len)
-			e->cx++;
-		else if (e->cy < e->n - 1)
-			e->cy++, e->cx = 0;
-		goto out;
-	case KEY_UP: if (e->cy > 0) e->cy--; break;
-	case KEY_DOWN: if (e->cy < e->n - 1) e->cy++; break;
-	case KEY_PAGEUP: e->cy = e->cy > rows ? e->cy - rows : 0; break;
-	case KEY_PAGEDOWN: e->cy = e->cy + rows < e->n ? e->cy + rows : e->n - 1; break;
-	case KEY_HOME:
-		if (k->mods & MOD_CTRL)
-			e->cy = 0;
-		e->cx = 0;
-		goto out;
-	case KEY_END:
-		if (k->mods & MOD_CTRL)
-			e->cy = e->n - 1;
-		e->cx = strlen(e->line[e->cy]);
-		goto out;
-	case KEY_ENTER: case KEY_KPENTER:
-		ed_insert_line(e, e->cy + 1, l + e->cx, len - e->cx);
-		e->line[e->cy][e->cx] = 0;
-		e->cy++;
-		e->cx = 0;
-		e->modified = 1;
-		goto out;
-	case KEY_BACKSPACE:
-		if (e->cx > 0) {
-			memmove(l + e->cx - 1, l + e->cx, len - e->cx + 1);
-			e->cx--;
-		} else if (e->cy > 0) {
-			char *prev = e->line[e->cy - 1];
-			int plen = strlen(prev);
-			char *j = realloc(prev, plen + len + 1);
-			if (!j)
-				goto out;
-			memcpy(j + plen, l, len + 1);
-			e->line[e->cy - 1] = j;
-			free(l);
-			memmove(&e->line[e->cy], &e->line[e->cy + 1], sizeof(*e->line) * (e->n - e->cy - 1));
-			e->n--;
-			e->cy--;
-			e->cx = plen;
-		}
-		e->modified = 1;
-		goto out;
-	case KEY_DELETE:
-		if (e->cx < len) {
-			memmove(l + e->cx, l + e->cx + 1, len - e->cx);
-		} else if (e->cy < e->n - 1) {
-			char *next = e->line[e->cy + 1];
-			char *j = realloc(l, len + strlen(next) + 1);
-			if (!j)
-				goto out;
-			strcpy(j + len, next);
-			e->line[e->cy] = j;
-			free(next);
-			memmove(&e->line[e->cy + 1], &e->line[e->cy + 2], sizeof(*e->line) * (e->n - e->cy - 2));
-			e->n--;
-		}
-		e->modified = 1;
-		goto out;
-	default:
-		if (k->code == KEY_TAB || (k->ch >= 32 && k->ch < 127 && !(k->mods & (MOD_CTRL | MOD_ALT)))) {
-			const char *ins = k->code == KEY_TAB ? "    " : NULL;
-			char one[2] = { (char)k->ch, 0 };
-			int n;
-			if (!ins)
-				ins = one;
-			n = strlen(ins);
-			char *j = realloc(l, len + n + 1);
-			if (!j)
-				goto out;
-			memmove(j + e->cx + n, j + e->cx, len - e->cx + 1);
-			memcpy(j + e->cx, ins, n);
-			e->line[e->cy] = j;
-			e->cx += n;
-			e->modified = 1;
-		}
-		goto out;
-	}
-	/* vertical moves keep the column inside the line */
-	len = strlen(e->line[e->cy]);
-	if (e->cx > len)
-		e->cx = len;
-out:
-	ed_title(w);
-	w->dirty = need_redraw = 1;
-}
-
-static void ed_mouse(struct win *w, int x, int y, int ev, int arg)
-{
-	struct editor *e = w->priv;
-
-	if (ev == M_WHEEL) {
-		e->cy -= arg * 3;
-		if (e->cy < 0)
-			e->cy = 0;
-		if (e->cy >= e->n)
-			e->cy = e->n - 1;
-	} else if (ev == M_DOWN || ev == M_DOUBLE || ev == M_MOVE) {
-		int cy = e->top + (y - 2) / FONT_H, cx = e->left + (x - 4 + FONT_W / 2) / FONT_W;
-		if (cy >= e->n)
-			cy = e->n - 1;
-		e->cy = cy < 0 ? 0 : cy;
-		int len = strlen(e->line[e->cy]);
-		e->cx = cx < 0 ? 0 : cx > len ? len : cx;
-		if (ev == M_MOVE) {
-			e->sel = e->cx != e->ax || e->cy != e->ay;
-		} else {
-			e->sel = 0;
-			e->ax = e->cx;
-			e->ay = e->cy;
-		}
-	} else {
-		return;
-	}
-	if (e->cx > (int)strlen(e->line[e->cy]))
-		e->cx = strlen(e->line[e->cy]);
-	w->dirty = need_redraw = 1;
-}
-
-static void ed_close(struct win *w)
-{
-	struct editor *e = w->priv;
-
-	for (int i = 0; i < e->n; i++)
-		free(e->line[i]);
-	free(e->line);
-	free(e);
-}
-
-static const struct app_ops editor_ops = {
-	.draw = ed_draw, .key = ed_key, .mouse = ed_mouse, .close = ed_close,
+static const struct app_ops message_ops = {
+	.draw = message_draw, .key = message_key, .mouse = message_mouse, .close = message_close,
 };
 
-static void open_editor(const char *path)
+void open_message(const char *title, const char *msg, void (*yes)(void *), void *ctx)
 {
-	struct editor *e = calloc(1, sizeof(*e));
+	struct message *m = calloc(1, sizeof(*m));
 	struct win *w;
+	int lines = 1, width = 0, cur = 0;
 
-	if (!e)
+	if (!m)
 		return;
-	if (path)
-		snprintf(e->path, sizeof(e->path), "%s", path);
-	ed_load(e);
-	w = win_new("Editor", 600, 440, &editor_ops);
+	snprintf(m->text, sizeof(m->text), "%s", msg);
+	for (const char *s = m->text; *s; s++) {
+		if (*s == '\n') {
+			lines++;
+			cur = 0;
+		} else if (++cur > width) {
+			width = cur;
+		}
+	}
+	m->yes = yes;
+	m->ctx = ctx;
+	width = width * FONT_W + 28;
+	w = win_new(title, width < 300 ? 300 : width > 640 ? 640 : width,
+		    lines * (FONT_H + 2) + 70, &message_ops);
 	if (!w) {
-		ed_close(&(struct win){ .priv = e });
+		free(m);
 		return;
 	}
-	w->priv = e;
-	ed_title(w);
+	w->priv = m;
+	w->fixed = 1;
+	win_center(w);
 }
 
 /* ---------------------------------------------------------------- about */
@@ -1285,93 +674,15 @@ static void about_draw(struct win *w)
 	text(&w->surf, 16, 88, line, C_WIN_FG, w->w - 32);
 	text(&w->surf, 16, 120, "Linux natively in WebAssembly.", C_DIM, w->w - 32);
 	text(&w->surf, 16, 140, "Written by AI (vibe coded).", C_DIM, w->w - 32);
+	text(&w->surf, 16, 160, "Files in /root are saved in the browser.", C_DIM, w->w - 32);
 }
 
-static const struct app_ops about_ops = { .draw = about_draw };
-
-/* ---------------------------------------------------------------- prompt */
-
-struct prompt {
-	char label[64];
-	char text[512];
-	int len;
-	void (*done)(const char *text);
-};
-
-static void prompt_draw(struct win *w)
+static void about_tick(struct win *w)
 {
-	struct prompt *p = w->priv;
-	int fw = w->w - 24, shown = fw / FONT_W - 1;
-	const char *t = p->text + (p->len > shown ? p->len - shown : 0);
-
-	fill(&w->surf, 0, 0, w->w, w->h, C_WIN_BG);
-	text(&w->surf, 12, 12, p->label, C_WIN_FG, w->w - 24);
-	fill(&w->surf, 12, 34, fw, FONT_H + 8, rgb(255, 255, 255));
-	frame(&w->surf, 12, 34, fw, FONT_H + 8, C_SEL);
-	int tw = text(&w->surf, 16, 38, t, C_WIN_FG, fw - 8);
-	fill(&w->surf, 16 + tw, 38, 2, FONT_H, C_SEL);
-	text(&w->surf, 12, w->h - 24, "Enter: open   Esc: cancel   Ctrl+U: clear", C_DIM, w->w - 24);
+	win_dirty(w);	/* the uptime */
 }
 
-static void prompt_key(struct win *w, const struct key *k)
-{
-	struct prompt *p = w->priv;
-
-	if (k->code == KEY_ENTER || k->code == KEY_KPENTER) {
-		void (*done)(const char *) = p->done;
-		char text[sizeof(p->text)];
-		memcpy(text, p->text, sizeof(text));
-		w->dead = 1;
-		if (p->len)
-			done(text);
-		return;
-	}
-	if (k->code == KEY_ESC) {
-		w->dead = 1;
-		return;
-	}
-	if (k->code == KEY_BACKSPACE) {
-		if (p->len)
-			p->text[--p->len] = 0;
-	} else if ((k->mods & MOD_CTRL) && k->ch == 'u') {
-		p->len = 0;
-		p->text[0] = 0;
-	} else if (k->ch >= 32 && k->ch < 127 && !(k->mods & MOD_CTRL) &&
-		   p->len < (int)sizeof(p->text) - 1) {
-		p->text[p->len++] = k->ch;
-		p->text[p->len] = 0;
-	}
-	w->dirty = need_redraw = 1;
-}
-
-static void prompt_close(struct win *w)
-{
-	free(w->priv);
-}
-
-static const struct app_ops prompt_ops = { .draw = prompt_draw, .key = prompt_key, .close = prompt_close };
-
-static void open_prompt(const char *title, const char *label, const char *init,
-			void (*done)(const char *))
-{
-	struct prompt *p = calloc(1, sizeof(*p));
-	struct win *w;
-
-	if (!p)
-		return;
-	snprintf(p->label, sizeof(p->label), "%s", label);
-	snprintf(p->text, sizeof(p->text), "%s", init);
-	p->len = strlen(p->text);
-	p->done = done;
-	w = win_new(title, 480, 100, &prompt_ops);
-	if (!w) {
-		free(p);
-		return;
-	}
-	w->priv = p;
-	w->x = (screen.w - w->w) / 2;
-	w->y = (screen.h - w->h) / 3;
-}
+static const struct app_ops about_ops = { .draw = about_draw, .tick = about_tick };
 
 /* ---------------------------------------------------------------- fullscreen programs */
 
@@ -1387,13 +698,6 @@ static void run_fullscreen(char *const argv[])
 		fullscreen_pid = pid;
 }
 
-/* ---------------------------------------------------------------- start menu */
-
-struct menu_item { const char *label; const uint16_t *icon; void (*fn)(void); };
-
-static void m_terminal(void) { open_terminal(NULL); }
-static void m_files(void) { open_files("/root"); }
-static void m_editor(void) { open_editor(NULL); }
 static void m_browser(void)
 {
 	static char *argv[] = { "/usr/bin/netsurf", NULL };
@@ -1401,9 +705,10 @@ static void m_browser(void)
 	if (access(argv[0], X_OK) == 0)
 		run_fullscreen(argv);
 	else
-		open_terminal("echo 'The browser (NetSurf) is not installed yet.'; sleep 5");
+		open_message("Web browser", "The browser (NetSurf) is not installed.", NULL, NULL);
 }
-static void browse(const char *url)
+
+void browse(const char *url)
 {
 	static char u[600];
 	static char *argv[] = { "/usr/bin/netsurf", u, NULL };
@@ -1423,33 +728,340 @@ static void browse(const char *url)
 	if (access(argv[0], X_OK) == 0)
 		run_fullscreen(argv);
 }
-static void m_open_url(void) { open_prompt("Open web page", "Address (http:// is added if missing):", "", browse); }
-static void m_about(void) { win_new("About WebLinux", 340, 170, &about_ops); }
+
+/* ---------------------------------------------------------------- start menu */
+
+static void browse_cb(void *ctx, const char *url) { (void)ctx; browse(url); }
+static void m_terminal(void) { open_terminal(NULL); }
+static void m_files(void) { open_files("/root"); }
+static void m_editor(void) { open_editor(NULL); }
+static void m_open_url(void) { open_prompt("Open web page", "Address (http:// is added if missing):", "", browse_cb, NULL); }
+static void m_paint(void) { open_paint(NULL); }
+static void m_about(void)
+{
+	struct win *w = win_new("About WebLinux", 360, 190, &about_ops);
+	if (w) {
+		w->fixed = 1;
+		w->tick_ms = 1000;
+	}
+}
 static void m_console(void);
+static void m_help(void) { open_editor("/usr/share/doc/weblinux.txt"); }
+
+struct menu_item { const char *label; const uint16_t *icon; void (*fn)(void); };
 
 static const struct menu_item menu[] = {
 	{ "Terminal", icon_term, m_terminal },
 	{ "Files", icon_folder, m_files },
 	{ "Editor", icon_edit, m_editor },
 	{ "Web browser", icon_globe, m_browser },
+	{ "-", NULL, NULL },
 	{ "Open web page...", icon_globe, m_open_url },
+	{ "Paint", icon_paint, m_paint },
+	{ "Calculator", icon_calc, open_calc },
+	{ "Minesweeper", icon_mine, open_mines },
+	{ "Snake", icon_snake, open_snake },
+	{ "Task manager", icon_tasks, open_tasks },
+	{ "-", NULL, NULL },
+	{ "Settings", icon_gear, open_settings },
+	{ "Help", icon_file, m_help },
 	{ "About", icon_file, m_about },
 	{ "Text console", icon_term, m_console },
 };
 #define NMENU (int)(sizeof(menu) / sizeof(menu[0]))
-#define MENU_W 200
-#define MENU_ROW 28
 
-static struct rect menu_rect(void)
+static void start_pick(void *ctx, int i)
 {
-	return (struct rect){ 4, screen.h - TASKBAR_H - NMENU * MENU_ROW - 8, MENU_W, NMENU * MENU_ROW + 8 };
+	(void)ctx;
+	if (menu[i].fn)
+		menu[i].fn();
 }
 
-/* desktop icons: the first four menu entries */
-#define NICONS 4
+static void open_start_menu(void)
+{
+	const char *items[NMENU];
+	const uint16_t *icons[NMENU];
+	int h = 8;
+
+	for (int i = 0; i < NMENU; i++) {
+		items[i] = menu[i].label;
+		icons[i] = menu[i].icon;
+		h += strcmp(items[i], "-") ? POP_ROW : POP_SEP;
+	}
+	start_menu_open = 1;
+	popup_open(4, screen.h - TASKBAR_H - h - 2, items, icons, NMENU, start_pick, NULL);
+}
+
+/* ---------------------------------------------------------------- desktop icons */
+
+/* The launchers come first, then the files in ~/Desktop. */
+#define NLAUNCH 4
+#define ICON_W 76
+#define ICON_H 72
+
+struct dicon { char name[NAME_MAX + 1]; int dir; };
+static struct dicon *dicons;
+static int ndicons, icon_sel = -1;
+static struct timespec desktop_mtime;
+
+static int icon_count(void) { return NLAUNCH + ndicons; }
+
 static struct rect icon_rect(int i)
 {
-	return (struct rect){ 20, 20 + i * 76, 72, 64 };
+	int per_col = (screen.h - TASKBAR_H - 16) / ICON_H;
+
+	if (per_col < 1)
+		per_col = 1;
+	return (struct rect){ 12 + i / per_col * ICON_W, 12 + i % per_col * ICON_H, ICON_W, ICON_H - 8 };
+}
+
+static int dicon_cmp(const void *a, const void *b)
+{
+	const struct dicon *x = a, *y = b;
+
+	if (x->dir != y->dir)
+		return y->dir - x->dir;
+	return strcasecmp(x->name, y->name);
+}
+
+static void desktop_load(void)
+{
+	DIR *d = opendir(DESKTOP_DIR);
+	struct dirent *de;
+	struct stat st;
+	int cap = 0;
+
+	free(dicons);
+	dicons = NULL;
+	ndicons = 0;
+	if (stat(DESKTOP_DIR, &st) == 0)
+		desktop_mtime = st.st_mtim;
+	while (d && (de = readdir(d))) {
+		char full[PATH_MAX];
+		if (de->d_name[0] == '.')
+			continue;
+		if (ndicons == cap) {
+			struct dicon *n = realloc(dicons, sizeof(*n) * (cap = cap ? cap * 2 : 16));
+			if (!n)
+				break;
+			dicons = n;
+		}
+		snprintf(full, sizeof(full), DESKTOP_DIR "/%s", de->d_name);
+		snprintf(dicons[ndicons].name, sizeof(dicons[0].name), "%s", de->d_name);
+		dicons[ndicons].dir = stat(full, &st) == 0 && S_ISDIR(st.st_mode);
+		ndicons++;
+	}
+	if (d)
+		closedir(d);
+	qsort(dicons, ndicons, sizeof(*dicons), dicon_cmp);
+	if (icon_sel >= icon_count())
+		icon_sel = -1;
+	need_redraw = 1;
+}
+
+static void desktop_check(void)
+{
+	struct stat st;
+
+	if (stat(DESKTOP_DIR, &st) == 0 &&
+	    (st.st_mtim.tv_sec != desktop_mtime.tv_sec || st.st_mtim.tv_nsec != desktop_mtime.tv_nsec))
+		desktop_load();
+}
+
+static const char *icon_label(int i)
+{
+	return i < NLAUNCH ? menu[i].label : dicons[i - NLAUNCH].name;
+}
+
+static const uint16_t *icon_bits(int i)
+{
+	if (i < NLAUNCH)
+		return menu[i].icon;
+	if (dicons[i - NLAUNCH].dir)
+		return icon_folder;
+	return is_image(dicons[i - NLAUNCH].name) ? icon_image : icon_file;
+}
+
+static void icon_path(int i, char *buf, size_t n)
+{
+	snprintf(buf, n, DESKTOP_DIR "/%s", dicons[i - NLAUNCH].name);
+}
+
+static void icon_open(int i)
+{
+	char p[PATH_MAX];
+
+	if (i < NLAUNCH) {
+		menu[i].fn();
+		return;
+	}
+	icon_path(i, p, sizeof(p));
+	if (dicons[i - NLAUNCH].dir)
+		open_files(p);
+	else
+		open_path(p);
+}
+
+static int icon_at(int x, int y)
+{
+	for (int i = 0; i < icon_count(); i++) {
+		struct rect r = icon_rect(i);
+		if (in_box(x, y, r.x, r.y, r.w, r.h))
+			return i;
+	}
+	return -1;
+}
+
+static void draw_icons(void)
+{
+	for (int i = 0; i < icon_count(); i++) {
+		struct rect r = icon_rect(i);
+		const char *label = icon_label(i);
+		char shown[16];
+		int n = strlen(label);
+
+		/* long names: the start and an ellipsis */
+		if (n > 9)
+			snprintf(shown, sizeof(shown), "%.7s..", label);
+		else
+			snprintf(shown, sizeof(shown), "%s", label);
+		int lw = strlen(shown) * FONT_W;
+		if (i == icon_sel)
+			fill_alpha(&back, r.x, r.y, r.w, r.h, C_SEL, 120);
+		uint32_t c = C_TEXT;
+		if (i >= NLAUNCH && dicons[i - NLAUNCH].dir)
+			c = rgb(0xf0, 0xc0, 0x50);
+		bitmap(&back, r.x + (r.w - 16) / 2, r.y + 8, icon_bits(i), 16, 16, c);
+		fill_alpha(&back, r.x + (r.w - lw) / 2 - 2, r.y + 32, lw + 4, FONT_H + 2, 0, 100);
+		text(&back, r.x + (r.w - lw) / 2, r.y + 33, shown, C_TEXT, 0);
+	}
+}
+
+static char menu_target[PATH_MAX];	/* the file a desktop pop-up is about */
+
+static void desk_new_folder(void *ctx, const char *name)
+{
+	char p[PATH_MAX];
+
+	(void)ctx;
+	if (strchr(name, '/'))
+		return;
+	snprintf(p, sizeof(p), DESKTOP_DIR "/%s", name);
+	if (mkdir(p, 0755) < 0)
+		open_message("New folder", strerror(errno), NULL, NULL);
+	sync();
+	desktop_load();
+}
+
+static void desk_new_file(void *ctx, const char *name)
+{
+	char p[PATH_MAX];
+	int fd;
+
+	(void)ctx;
+	if (strchr(name, '/'))
+		return;
+	snprintf(p, sizeof(p), DESKTOP_DIR "/%s", name);
+	fd = open(p, O_WRONLY | O_CREAT | O_EXCL, 0644);
+	if (fd < 0) {
+		open_message("New file", strerror(errno), NULL, NULL);
+		return;
+	}
+	close(fd);
+	sync();
+	desktop_load();
+	open_editor(p);
+}
+
+static void desk_rename(void *ctx, const char *name)
+{
+	char p[PATH_MAX];
+
+	(void)ctx;
+	if (strchr(name, '/'))
+		return;
+	snprintf(p, sizeof(p), DESKTOP_DIR "/%s", name);
+	if (rename(menu_target, p) < 0)
+		open_message("Rename", strerror(errno), NULL, NULL);
+	sync();
+	desktop_load();
+}
+
+static void desk_delete(void *ctx)
+{
+	char *argv[] = { "/bin/rm", "-rf", menu_target, NULL };
+
+	(void)ctx;
+	run_wait(argv);
+	sync();
+	desktop_load();
+}
+
+static void desk_bg_pick(void *ctx, int i)
+{
+	(void)ctx;
+	switch (i) {
+	case 0: open_prompt("New folder", "Folder name:", "New folder", desk_new_folder, NULL); break;
+	case 1: open_prompt("New text file", "File name:", "notes.txt", desk_new_file, NULL); break;
+	case 3: open_terminal_in(DESKTOP_DIR, NULL); break;
+	case 4: open_files(DESKTOP_DIR); break;
+	case 6: open_settings(); break;
+	case 7: desktop_load(); break;
+	}
+}
+
+static void desk_icon_pick(void *ctx, int i)
+{
+	int idx = (int)(long)ctx;
+	const char *base;
+
+	if (idx >= icon_count())
+		return;
+	switch (i) {
+	case 0:
+		icon_open(idx);
+		break;
+	case 1:
+		if (idx < NLAUNCH)
+			break;
+		open_editor(menu_target);
+		break;
+	case 3:
+		base = strrchr(menu_target, '/') + 1;
+		open_prompt("Rename", "New name:", base, desk_rename, NULL);
+		break;
+	case 4: {
+		char msg[PATH_MAX + 64];
+		snprintf(msg, sizeof(msg), "Delete %s?", strrchr(menu_target, '/') + 1);
+		open_message("Delete", msg, desk_delete, NULL);
+		break;
+	}
+	}
+}
+
+static void desktop_right_click(int x, int y)
+{
+	static const char *const bg[] = {
+		"New folder...", "New text file...", "-", "Open terminal here", "Open in Files",
+		"-", "Change wallpaper...", "Refresh",
+	};
+	int i = icon_at(x, y);
+
+	if (i < 0) {
+		icon_sel = -1;
+		popup_menu(x, y, bg, 8, desk_bg_pick, NULL);
+		return;
+	}
+	icon_sel = i;
+	if (i < NLAUNCH) {
+		static const char *const launcher[] = { "Open" };
+		popup_menu(x, y, launcher, 1, desk_icon_pick, (void *)(long)i);
+		return;
+	}
+	icon_path(i, menu_target, sizeof(menu_target));
+	const char *items[] = { "Open", dicons[i - NLAUNCH].dir ? "!Open in editor" : "Open in editor",
+				"-", "Rename...", "Delete" };
+	popup_menu(x, y, items, 5, desk_icon_pick, (void *)(long)i);
 }
 
 /* ---------------------------------------------------------------- drawing */
@@ -1463,14 +1075,22 @@ static int task_button_w(void)
 static void draw_window(struct win *w, int top)
 {
 	int ox = w->x - 1, oy = w->y - TITLE_H - 1, ow = w->w + 2, oh = w->h + TITLE_H + 2;
+	int bx = w->x + w->w, by = w->y - TITLE_H;
 
 	fill_alpha(&back, ox + 4, oy + 4, ow, oh, 0, 90);
 	frame(&back, ox, oy, ow, oh, C_BORDER);
-	fill(&back, w->x, w->y - TITLE_H, w->w, TITLE_H, top ? C_TITLE : C_TITLE_OFF);
-	text(&back, w->x + 8, w->y - TITLE_H + 3, w->title, C_TEXT, w->w - 60);
-	/* minimize and close */
-	text(&back, w->x + w->w - 40, w->y - TITLE_H + 3, "_", C_TEXT, 0);
-	text(&back, w->x + w->w - 18, w->y - TITLE_H + 3, "x", C_TEXT, 0);
+	fill(&back, w->x, by, w->w, TITLE_H, top ? C_TITLE : C_TITLE_OFF);
+	text(&back, w->x + 8, by + 3, w->title, C_TEXT, w->w - 80);
+	/* minimize, maximize, close */
+	fill(&back, bx - 60, by + 14, 8, 2, C_TEXT);
+	if (!w->fixed) {
+		frame(&back, bx - 38, by + 6, 10, 10, C_TEXT);
+		fill(&back, bx - 38, by + 6, 10, 2, C_TEXT);
+	}
+	for (int i = 0; i < 9; i++) {
+		fill(&back, bx - 16 + i, by + 6 + i, 2, 1, C_TEXT);
+		fill(&back, bx - 16 + 8 - i, by + 6 + i, 2, 1, C_TEXT);
+	}
 	if (w->dirty || w->drawn_focused != top) {
 		w->dirty = 0;
 		w->drawn_focused = top;
@@ -1478,8 +1098,9 @@ static void draw_window(struct win *w, int top)
 	}
 	blit(&back, w->x, w->y, &w->surf);
 	/* resize grip */
-	for (int i = 3; i < CORNER; i += 4)
-		fill(&back, w->x + w->w - i, w->y + w->h - 2, i, 1, C_DIM);
+	if (!w->fixed && !w->maximized)
+		for (int i = 3; i < CORNER; i += 4)
+			fill(&back, w->x + w->w - i, w->y + w->h - 2, i, 1, C_DIM);
 }
 
 static void redraw(void)
@@ -1491,13 +1112,7 @@ static void redraw(void)
 	int x;
 
 	blit(&back, 0, 0, &wallpaper);
-	for (int i = 0; i < NICONS; i++) {
-		struct rect r = icon_rect(i);
-		int lw = strlen(menu[i].label) * FONT_W;
-		bitmap(&back, r.x + 28, r.y + 6, menu[i].icon, 16, 16, C_TEXT);
-		fill_alpha(&back, r.x + (r.w - lw) / 2 - 2, r.y + 30, lw + 4, FONT_H + 2, 0, 100);
-		text(&back, r.x + (r.w - lw) / 2, r.y + 31, menu[i].label, C_TEXT, 0);
-	}
+	draw_icons();
 	for (int i = 0; i < nwins; i++)
 		if (!wins[i]->minimized)
 			draw_window(wins[i], wins[i] == top);
@@ -1505,7 +1120,7 @@ static void redraw(void)
 	/* taskbar */
 	fill(&back, 0, screen.h - TASKBAR_H, screen.w, TASKBAR_H, C_BAR);
 	fill(&back, 0, screen.h - TASKBAR_H, screen.w, 1, C_BAR_HI);
-	fill(&back, 4, screen.h - TASKBAR_H + 4, 80, TASKBAR_H - 8, menu_open ? C_SEL : C_BAR_HI);
+	fill(&back, 4, screen.h - TASKBAR_H + 4, 80, TASKBAR_H - 8, start_menu_open ? C_SEL : C_BAR_HI);
 	bitmap(&back, 10, screen.h - TASKBAR_H + 7, icon_globe, 16, 16, C_ACCENT);
 	text(&back, 32, screen.h - TASKBAR_H + 7, "Menu", C_TEXT, 0);
 	x = 90;
@@ -1520,18 +1135,11 @@ static void redraw(void)
 	text(&back, screen.w - 52, screen.h - TASKBAR_H + 7, clock, C_TEXT, 0);
 	last_clock = tm->tm_min;
 
-	if (menu_open) {
-		struct rect r = menu_rect();
-		fill_alpha(&back, r.x + 4, r.y + 4, r.w, r.h, 0, 90);
-		fill(&back, r.x, r.y, r.w, r.h, C_BAR);
-		frame(&back, r.x, r.y, r.w, r.h, C_BAR_HI);
-		for (int i = 0; i < NMENU; i++) {
-			int y = r.y + 4 + i * MENU_ROW;
-			if (mx >= r.x && mx < r.x + r.w && my >= y && my < y + MENU_ROW)
-				fill(&back, r.x + 2, y, r.w - 4, MENU_ROW, C_SEL);
-			bitmap(&back, r.x + 10, y + 6, menu[i].icon, 16, 16, C_ACCENT);
-			text(&back, r.x + 36, y + 6, menu[i].label, C_TEXT, 0);
-		}
+	if (pop.open) {
+		int i = pop_at(mx, my);
+		if (i >= 0)
+			pop.hover = i;
+		draw_popup();
 	}
 
 	bitmap(&back, mx, my, cur_in, 16, 19, rgb(255, 255, 255));
@@ -1568,6 +1176,7 @@ static void m_console(void)
 	exit(1);
 }
 
+/* part: 0 content, 1 title, 2 close, 3 minimize, 4 resize grip, 5 maximize */
 static struct win *win_at(int x, int y, int *part)
 {
 	for (int i = nwins - 1; i >= 0; i--) {
@@ -1575,9 +1184,10 @@ static struct win *win_at(int x, int y, int *part)
 		if (w->minimized)
 			continue;
 		if (x >= w->x - 1 && x < w->x + w->w + 1 && y >= w->y - TITLE_H - 1 && y < w->y + w->h + 1) {
+			int rx = w->x + w->w - x;
 			if (y < w->y)
-				*part = x >= w->x + w->w - 22 ? 2 : x >= w->x + w->w - 44 ? 3 : 1;
-			else if (x >= w->x + w->w - CORNER && y >= w->y + w->h - CORNER)
+				*part = rx <= 22 ? 2 : rx <= 44 ? (w->fixed ? 1 : 5) : rx <= 66 ? 3 : 1;
+			else if (!w->fixed && !w->maximized && rx <= CORNER && y >= w->y + w->h - CORNER)
 				*part = 4;
 			else
 				*part = 0;
@@ -1604,6 +1214,8 @@ static void handle_key(int code, int value)
 	}
 	if (!value)
 		return;
+	if (pop.open && popup_key(code))
+		return;
 	if ((mods & (MOD_CTRL | MOD_ALT)) == (MOD_CTRL | MOD_ALT) && code == KEY_T) {
 		open_terminal(NULL);
 		return;
@@ -1620,10 +1232,14 @@ static void handle_key(int code, int value)
 		return;
 	}
 	if (code == KEY_LEFTMETA || code == KEY_RIGHTMETA) {
-		menu_open = !menu_open;
-		need_redraw = 1;
+		if (pop.open)
+			popup_close();
+		else
+			open_start_menu();
 		return;
 	}
+	if (pop.open)
+		popup_close();
 	if (!w || !w->ops->key)
 		return;
 	k.code = code;
@@ -1640,6 +1256,51 @@ static void handle_key(int code, int value)
 	w->ops->key(w, &k);
 }
 
+static void focus_win(struct win *w)
+{
+	if (w != focus()) {
+		struct win *old = focus();
+		raise_win(w);
+		if (old)
+			old->dirty = 1;
+		w->dirty = 1;
+	}
+}
+
+static void win_menu_pick(void *ctx, int i)
+{
+	struct win *w = ctx;
+
+	if (!win_alive(w))
+		return;
+	switch (i) {
+	case 0:
+		if (w->minimized)
+			raise_win(w);
+		else
+			w->minimized = 1;
+		break;
+	case 1:
+		focus_win(w);
+		win_toggle_max(w);
+		break;
+	case 3:
+		w->dead = 1;
+		break;
+	}
+	need_redraw = 1;
+}
+
+static void win_menu(struct win *w, int x, int y)
+{
+	const char *items[] = {
+		w->minimized ? "Restore" : "Minimize",
+		w->fixed ? "!Maximize" : w->maximized ? "Unmaximize" : "Maximize",
+		"-", "Close",
+	};
+	popup_menu(x, y, items, 4, win_menu_pick, w);
+}
+
 static void click(int x, int y)
 {
 	long long t = now_ms();
@@ -1651,21 +1312,24 @@ static void click(int x, int y)
 	last_click.x = x;
 	last_click.y = y;
 
-	if (menu_open) {
-		struct rect r = menu_rect();
-		menu_open = 0;
-		need_redraw = 1;
-		if (x >= r.x && x < r.x + r.w && y >= r.y + 4 && y < r.y + r.h - 4) {
-			menu[(y - r.y - 4) / MENU_ROW].fn();
+	if (pop.open) {
+		int i = pop_at(x, y);
+		int was_start = start_menu_open;
+		if (i >= 0 && y >= pop.y && y < pop.y + pop.h) {
+			if (pop_enabled(i))
+				pop_pick(i);
 			return;
 		}
-		if (!(y >= screen.h - TASKBAR_H && x < 86))
+		popup_close();
+		/* a click on the menu button closes the start menu */
+		if (was_start && y >= screen.h - TASKBAR_H && x < 86)
 			return;
-		return;
+		if (y < screen.h - TASKBAR_H)
+			return;
 	}
 	if (y >= screen.h - TASKBAR_H) {
 		if (x < 86) {
-			menu_open = 1;
+			open_start_menu();
 		} else if (nwins) {
 			int i = (x - 90) / task_button_w();
 			if (i >= 0 && i < nwins) {
@@ -1681,22 +1345,24 @@ static void click(int x, int y)
 	}
 	w = win_at(x, y, &part);
 	if (!w) {
-		for (int i = 0; i < NICONS; i++) {
-			struct rect r = icon_rect(i);
-			if (dbl && x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h)
-				menu[i].fn();
+		int i = icon_at(x, y);
+		if (i != icon_sel) {
+			icon_sel = i;
+			need_redraw = 1;
 		}
+		if (dbl && i >= 0)
+			icon_open(i);
 		return;
 	}
-	if (w != focus()) {
-		struct win *old = focus();
-		raise_win(w);
-		if (old)
-			old->dirty = 1;
-		w->dirty = 1;
-	}
+	focus_win(w);
 	switch (part) {
 	case 1:
+		if (dbl && !w->fixed) {
+			win_toggle_max(w);
+			break;
+		}
+		if (w->maximized)
+			break;
 		drag.w = w;
 		drag.dx = x - w->x;
 		drag.dy = y - w->y;
@@ -1715,12 +1381,46 @@ static void click(int x, int y)
 		drag.dy = w->y + w->h - y;
 		drag.resize = 1;
 		break;
+	case 5:
+		win_toggle_max(w);
+		break;
 	default:
 		if (w->ops->mouse) {
 			mouse_capture = w;
 			w->ops->mouse(w, x - w->x, y - w->y, dbl ? M_DOUBLE : M_DOWN, 1);
 		}
 	}
+}
+
+static void right_click(int x, int y)
+{
+	int part;
+	struct win *w;
+
+	if (pop.open) {
+		popup_close();
+		return;
+	}
+	if (y >= screen.h - TASKBAR_H) {
+		if (x >= 90 && nwins) {
+			int i = (x - 90) / task_button_w();
+			if (i >= 0 && i < nwins)
+				win_menu(wins[i], x, y);
+		} else if (x < 86) {
+			open_start_menu();
+		}
+		return;
+	}
+	w = win_at(x, y, &part);
+	if (!w) {
+		desktop_right_click(x, y);
+		return;
+	}
+	focus_win(w);
+	if (part == 0 && w->ops->mouse)
+		w->ops->mouse(w, x - w->x, y - w->y, M_RIGHT, 0);
+	else if (part != 0)
+		win_menu(w, x, y);
 }
 
 static void pointer_moved(void)
@@ -1764,6 +1464,9 @@ static void handle_event(const struct input_event *ev)
 					c->ops->mouse(c, mx - c->x, my - c->y, M_UP, 0);
 				}
 			}
+		} else if (ev->code == BTN_RIGHT) {
+			if (ev->value)
+				right_click(mx, my);
 		} else if (ev->code < BTN_MISC || ev->code >= KEY_OK) {
 			handle_key(ev->code, ev->value);
 		}
@@ -1793,6 +1496,52 @@ static void handle_event(const struct input_event *ev)
 		}
 		break;
 	}
+}
+
+/* ---------------------------------------------------------------- settings */
+
+#define SETTINGS "/root/.config/wldesk"
+
+static void load_settings(void)
+{
+	FILE *fp = fopen(SETTINGS, "r");
+	unsigned a, b;
+
+	if (!fp)
+		return;
+	if (fscanf(fp, "wallpaper %x %x", &a, &b) == 2) {
+		desk_top = a & 0xffffff;
+		desk_bot = b & 0xffffff;
+	}
+	fclose(fp);
+}
+
+void save_settings(void)
+{
+	FILE *fp;
+
+	mkdir("/root/.config", 0755);
+	fp = fopen(SETTINGS, "w");
+	if (!fp)
+		return;
+	fprintf(fp, "wallpaper %06x %06x\n", desk_top, desk_bot);
+	fclose(fp);
+	sync();
+}
+
+void make_wallpaper(void)
+{
+	if (!wallpaper.px)
+		surface_init(&wallpaper, screen.w, screen.h);
+	gradient(&wallpaper, 0, 0, screen.w, screen.h, desk_top, desk_bot);
+	/* a faint grid of dots */
+	for (int y = 24; y < screen.h; y += 32)
+		for (int x = 24; x < screen.w; x += 32)
+			fill_alpha(&wallpaper, x, y, 2, 2, rgb(255, 255, 255), 18);
+	const char *brand = "WebLinux";
+	int w = strlen(brand) * FONT_W;
+	text(&wallpaper, screen.w - w - 24, screen.h - TASKBAR_H - 36, brand, rgb(0x6d, 0x8c, 0xad), 0);
+	need_redraw = 1;
 }
 
 /* ---------------------------------------------------------------- setup */
@@ -1827,13 +1576,7 @@ static void reap(void)
 				wins[i]->dirty = 1;
 			need_redraw = 1;
 		}
-		for (int i = 0; i < nwins; i++) {
-			if (wins[i]->ops == &term_ops) {
-				struct termapp *a = wins[i]->priv;
-				if (a->pid == pid)
-					a->pid = 0;
-			}
-		}
+		term_reaped(pid);
 	}
 }
 
@@ -1874,17 +1617,30 @@ static void open_inputs(void)
 	}
 }
 
-static void make_wallpaper(void)
+/* the first start on a new disk: a desktop folder with a note in it */
+static void first_run(void)
 {
-	surface_init(&wallpaper, screen.w, screen.h);
-	gradient(&wallpaper, 0, 0, screen.w, screen.h, C_DESK_TOP, C_DESK_BOT);
-	/* a faint grid of dots */
-	for (int y = 24; y < screen.h; y += 32)
-		for (int x = 24; x < screen.w; x += 32)
-			fill_alpha(&wallpaper, x, y, 2, 2, rgb(255, 255, 255), 18);
-	const char *brand = "WebLinux";
-	int w = strlen(brand) * FONT_W;
-	text(&wallpaper, screen.w - w - 24, screen.h - TASKBAR_H - 36, brand, rgb(0x6d, 0x8c, 0xad), 0);
+	FILE *fp;
+
+	if (mkdir(DESKTOP_DIR, 0755) < 0)
+		return;
+	fp = fopen(DESKTOP_DIR "/Welcome.txt", "w");
+	if (!fp)
+		return;
+	fputs("Welcome to WebLinux!\n"
+	      "\n"
+	      "This is Linux compiled to WebAssembly, running in your browser tab.\n"
+	      "\n"
+	      "- Files in /root (this desktop is /root/Desktop) are saved in the\n"
+	      "  browser and come back when you open the page again.\n"
+	      "- Right-click the desktop, files, windows and taskbar buttons for menus.\n"
+	      "- In the file manager: F2 renames, Delete deletes, Ctrl+C/X/V copy,\n"
+	      "  cut and paste files, Ctrl+H shows hidden files.\n"
+	      "- Double-click a title bar to maximize a window. Alt+F4 closes it,\n"
+	      "  Alt+Tab switches, Ctrl+Alt+T opens a terminal.\n"
+	      "- The Menu button has a web browser, Paint, games and more.\n", fp);
+	fclose(fp);
+	sync();
 }
 
 int main(int argc, char **argv)
@@ -1903,6 +1659,7 @@ int main(int argc, char **argv)
 		fprintf(stderr, "wldesk: no input devices\n");
 	if (surface_init(&back, screen.w, screen.h))
 		return 1;
+	load_settings();
 	make_wallpaper();
 	mx = screen.w / 2;
 	my = screen.h / 2;
@@ -1915,6 +1672,8 @@ int main(int argc, char **argv)
 	ioctl(0, KDSETMODE, KD_GRAPHICS);
 	ioctl(0, KDSKBMODE, K_OFF);
 	chdir("/root");
+	first_run();
+	desktop_load();
 
 	if (argc > 1 && !strcmp(argv[1], "--bench")) {
 		/* time full redraws with a few windows open */
@@ -1937,12 +1696,25 @@ int main(int argc, char **argv)
 		struct pollfd pfd[MAX_INPUT + MAX_WINS];
 		struct win *pw[MAX_INPUT + MAX_WINS];
 		int n = 0, timeout = 1000;
+		long long now = now_ms();
 
 		if (got_child)
 			reap();
 		for (int i = 0; i < nwins; i++)
 			if (wins[i]->dead)
 				win_close(wins[i--]);
+		for (int i = 0; i < nwins; i++) {
+			struct win *w = wins[i];
+			if (w->tick_ms <= 0 || !w->ops->tick || fullscreen_pid)
+				continue;
+			if (now >= w->next_tick) {
+				w->next_tick = now + w->tick_ms;
+				if (!w->minimized)
+					w->ops->tick(w);
+			}
+			if (w->next_tick - now < timeout)
+				timeout = w->next_tick - now;
+		}
 		for (int i = 0; i < ninput; i++) {
 			pw[n] = NULL;
 			pfd[n++] = (struct pollfd){ input_fd[i], POLLIN, 0 };
@@ -1956,6 +1728,8 @@ int main(int argc, char **argv)
 		long long since = now_ms() - last_redraw;
 		if (need_redraw && !fullscreen_pid)
 			timeout = since >= 16 ? 0 : 16 - since;
+		if (timeout < 0)
+			timeout = 0;
 		int r = poll(pfd, n, timeout);
 		if (r < 0 && errno != EINTR)
 			break;
@@ -1973,9 +1747,10 @@ int main(int argc, char **argv)
 			}
 		}
 		if (!fullscreen_pid) {
-			time_t now = time(NULL);
-			if (localtime(&now)->tm_min != last_clock)
+			time_t t = time(NULL);
+			if (localtime(&t)->tm_min != last_clock)
 				need_redraw = 1;
+			desktop_check();
 			if (need_redraw && now_ms() - last_redraw >= 16) {
 				long long t0 = now_ms();
 				redraw();

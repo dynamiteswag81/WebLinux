@@ -10,7 +10,7 @@
 // device, frame buffer console); {"sleep": ms} just waits; {"reload": 1}
 // reloads the page (a new boot, same browser storage); {"click": [x, y]}
 // clicks on the canvas at frame buffer coordinates ("double": true for a
-// double click; "wheel": dy scrolls there instead); {"button": "id"} clicks a page button (dialogs are
+// double click, "right": true for the right button; "wheel": dy scrolls there instead); {"button": "id"} clicks a page button (dialogs are
 // accepted; a reload it causes restarts the output); {"press": "Control+c"}
 // (or a list) presses keys on the canvas.  --shot saves a
 // screenshot of the canvas at the end.  @PORT@ in an input becomes the
@@ -116,7 +116,7 @@ try {
       const x = geo.l + (geo.w - geo.cw * sc) / 2 + cx * sc, y = geo.t + (geo.h - geo.ch * sc) / 2 + cy * sc;
       await page.mouse.move(x, y, { steps: 4 });
       if (input.wheel) await page.mouse.wheel(0, input.wheel);
-      else await page.mouse.click(x, y, { clickCount: input.double ? 2 : 1 });
+      else await page.mouse.click(x, y, { clickCount: input.double ? 2 : 1, button: input.right ? 'right' : 'left' });
     } else if (input && input.field !== undefined) {
       // type into the on-screen-keyboard text field (mobile path)
       await page.focus('#kbd');
