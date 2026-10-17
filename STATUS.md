@@ -133,6 +133,11 @@ Nothing half done. Last verified (Linux cloud session, 2026-10-17), all with
   `public/test/page.html` from the page server over the NAT with CSS, a PNG and JavaScript,
   in anti-aliased DejaVu fonts. (Screenshots: `--shot file.png`.)
 - `test/poweroff.json`: `poweroff` syncs; the file is there after the next boot.
+- `test/dns.json`: DNS through the relay (the boot test runs a fake resolver: `*.test` ->
+  10.0.2.2; `WEBLINUX_DNS=ip[:port]` sets the relay's resolver).
+- `test/tls.json`: HTTPS with curl/mbedTLS in the guest against a local server with a
+  throwaway certificate; an untrusted certificate is refused.
+- `test/paste.json`, `test/copy.json`, `test/editor.json`, `test/url.json`, `test/reset.json`.
 - BusyBox 1.37.0 (NOMMU, 353 applets) works.
 
 Desktop (`userland/desktop/`, `build/build-desktop.sh` -> `/usr/bin/wldesk`): one process on tty1
@@ -178,8 +183,8 @@ Notes:
 
 ## Next steps
 1. Real internet use: run `node server.js` on a machine with internet and browse https sites in
-   NetSurf (TLS via mbedTLS, DNS via the relay's resolver). Not testable from the cloud sandbox
-   (no outbound access there). Check certificate validation and speed.
+   NetSurf. DNS and TLS are tested locally (test/dns.json, test/tls.json) but the cloud sandbox
+   has no outbound access, so real sites are untested; check speed and certificate handling.
 2. (done) Desktop menu "Open web page..." prompts for an address and starts NetSurf on it
    (test/url.json). In NetSurf, Ctrl+U clears the URL bar. Closing NetSurf returns to the desktop.
 3. Performance (measured 2026-10-17, headless Chromium): pipe round trip between two processes
