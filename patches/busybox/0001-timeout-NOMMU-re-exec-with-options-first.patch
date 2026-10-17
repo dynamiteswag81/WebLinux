@@ -1,0 +1,37 @@
+--- a/coreutils/timeout.c
++++ b/coreutils/timeout.c
+@@ -123,11 +123,31 @@
+ 		/* Child: spawn grandchild and exit */
+ 		parent = getppid();
+ #if !BB_MMU
+-		argv[optind] = xasprintf("-p%u", parent);
+-		argv[optind + 1] = NULL;
+-#endif
++		/* Re-exec as "timeout -s SIG [-k T] -pPARENT DURATION -": the
++		 * options must come before the duration, getopt stops at the
++		 * first non-option.  A new vector: argv is shared with the
++		 * vforked parent, which still needs it. */
++		{
++			char **rargv = xzalloc(sizeof(rargv[0]) * 9);
++			int i = 0;
++
++			rargv[i++] = argv[0];
++			rargv[i++] = (char *)"-s";
++			rargv[i++] = (char *)opt_s;
++			if (opt_k) {
++				rargv[i++] = (char *)"-k";
++				rargv[i++] = opt_k;
++			}
++			rargv[i++] = xasprintf("-p%u", parent);
++			rargv[i++] = argv[optind - 1];
++			rargv[i++] = (char *)"-";
++			/* NB: exits with nonzero on error: */
++			bb_daemonize_or_rexec(0, rargv);
++		}
++#else
+ 		/* NB: exits with nonzero on error: */
+ 		bb_daemonize_or_rexec(0, argv);
++#endif
+ 		/* Here we are grandchild. Sleep, then kill grandparent */
+  grandchild:
+ 		if (timeout_wait(timeout, parent) == EXIT_SUCCESS)

@@ -5,6 +5,10 @@
 SRC=$W/src/busybox-1.37.0
 [ -d $SRC ] || { echo "run build/fetch-sources.sh first"; exit 1; }
 cd $SRC
+# our fixes (patches/busybox/*.patch), applied once
+for p in $W/patches/busybox/*.patch; do
+	patch -p1 -N --dry-run -s < $p > /dev/null 2>&1 && patch -p1 -N -s < $p
+done
 
 BBMAKE="make CC=bash\ $W/build/wasm-cc HOSTCC=/usr/bin/gcc HOSTCFLAGS=-std=gnu17 LD=$W/build/wasm-ld-r AR=llvm-ar STRIP=true"
 
