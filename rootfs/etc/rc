@@ -4,3 +4,10 @@ echo "WebLinux $(uname -r): BusyBox $(busybox 2>&1 | head -1 | cut -d' ' -f2), b
 # write file data back within a few seconds: the tab can close at any time
 echo 300 > /proc/sys/vm/dirty_expire_centisecs
 echo 100 > /proc/sys/vm/dirty_writeback_centisecs
+# network: the page is a NAT router (public/js/net.js)
+if [ -e /sys/class/net/eth0 ]; then
+	ip link set lo up
+	ip link set eth0 up
+	ip addr add 10.0.2.15/24 dev eth0
+	ip route add default via 10.0.2.2
+fi

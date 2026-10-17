@@ -1,0 +1,7 @@
+[
+ [null, "weblinux:/# "],
+ ["ip addr show eth0 | grep inet; ping -c 2 10.0.2.2", "2 packets received"],
+ ["wget -q -O - http://host:@PORT@/index.html | grep -c WebLinux", "\n1"],
+ ["wget -q -O /tmp/k.wasm http://10.0.2.2:@PORT@/vmlinux.wasm; ls -l /tmp/k.wasm; md5sum /tmp/k.wasm", "k.wasm"],
+ ["nc 10.0.2.2 1 < /dev/null; echo refused-$?", "refused-1"]
+]

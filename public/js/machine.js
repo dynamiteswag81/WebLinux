@@ -84,6 +84,7 @@ export class Machine extends EventTarget {
         this.dev[m.name] = m.addr;
         this._emit('device', m);
         if (m.name === 'blk') this._startDisk(m.addr);
+        if (m.name === 'net') this._startNet(m.addr);
         if (this.dev.irq && this.dev.timer_deadline && this.dev.timer_seq && !this.timer)
           this._startTimer();
         break;
@@ -115,6 +116,15 @@ export class Machine extends EventTarget {
     this.diskWorker = w;
     // release the disk file promptly so a reloaded page can open it
     addEventListener('pagehide', () => w.terminate());
+  }
+
+  _startNet(state) {
+    const w = new Worker(new URL('./net.js', import.meta.url));
+    w.onmessage = ({ data }) => { if (data.t === 'log') this._emit('log', data.s); };
+    const relayUrl = this.relayUrl
+      || `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/net`;
+    w.postMessage({ memory: this.memory, state, irq: this.dev.irq, relayUrl });
+    this.netWorker = w;
   }
 
   // Feed bytes to ttyW0 through the console input ring.
@@ -170,6 +180,7 @@ export class Machine extends EventTarget {
     this.workers.clear();
     if (this.timer) this.timer.terminate();
     if (this.diskWorker) this.diskWorker.terminate();
+    if (this.netWorker) this.netWorker.terminate();
     this._emit('halt', code);
   }
 }

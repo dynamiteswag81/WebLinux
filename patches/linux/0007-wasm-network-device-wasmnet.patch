@@ -1,0 +1,235 @@
+From af3e20124af4e11a36bf0bbe0b3e117b806ce967 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 17 Oct 2026 18:19:55 +0000
+Subject: [PATCH] wasm: network device (wasmnet)
+
+eth0: Ethernet frames through tx/rx rings of 2 KiB slots in shared
+memory, WASM_IRQ_NET for receive.  defconfig: NET, INET, UNIX, PACKET
+(no IPv6, no wireless).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/wasm/configs/wasm_defconfig |  12 ++-
+ arch/wasm/drivers/Kconfig        |   8 ++
+ arch/wasm/drivers/Makefile       |   1 +
+ arch/wasm/drivers/wasmnet.c      | 160 +++++++++++++++++++++++++++++++
+ 4 files changed, 180 insertions(+), 1 deletion(-)
+ create mode 100644 arch/wasm/drivers/wasmnet.c
+
+diff --git a/arch/wasm/configs/wasm_defconfig b/arch/wasm/configs/wasm_defconfig
+index 8d4bbad69..3b9107065 100644
+--- a/arch/wasm/configs/wasm_defconfig
++++ b/arch/wasm/configs/wasm_defconfig
+@@ -34,7 +34,17 @@ CONFIG_EXPERT=y
+ CONFIG_BINFMT_SCRIPT=y
+ # CONFIG_COREDUMP is not set
+ # CONFIG_COMPAT_BRK is not set
+-# CONFIG_NET is not set
++CONFIG_NET=y
++CONFIG_PACKET=y
++CONFIG_UNIX=y
++CONFIG_INET=y
++# CONFIG_INET_DIAG is not set
++# CONFIG_IPV6 is not set
++# CONFIG_WIRELESS is not set
++# CONFIG_WLAN is not set
++# CONFIG_ETHTOOL_NETLINK is not set
++CONFIG_NETDEVICES=y
++# CONFIG_ETHERNET is not set
+ CONFIG_DEVTMPFS=y
+ CONFIG_DEVTMPFS_MOUNT=y
+ # CONFIG_FW_LOADER is not set
+diff --git a/arch/wasm/drivers/Kconfig b/arch/wasm/drivers/Kconfig
+index a299f453a..8d7c58a6c 100644
+--- a/arch/wasm/drivers/Kconfig
++++ b/arch/wasm/drivers/Kconfig
+@@ -29,3 +29,11 @@ config WASM_BLK
+ 	default y
+ 	help
+ 	  /dev/wda, backed by browser storage through the host's disk worker.
++
++config WASM_NET
++	bool "Host network device (eth0)"
++	depends on NET
++	default y
++	help
++	  Ethernet frames to the host page, which routes them (NAT) to the
++	  real network through the page server.
+diff --git a/arch/wasm/drivers/Makefile b/arch/wasm/drivers/Makefile
+index be9ca36a6..9084c31e7 100644
+--- a/arch/wasm/drivers/Makefile
++++ b/arch/wasm/drivers/Makefile
+@@ -3,3 +3,4 @@ obj-$(CONFIG_WASM_CONSOLE) += console.o
+ obj-$(CONFIG_WASM_FB) += wasmfb.o
+ obj-$(CONFIG_WASM_INPUT) += wasminput.o
+ obj-$(CONFIG_WASM_BLK) += wasmblk.o
++obj-$(CONFIG_WASM_NET) += wasmnet.o
+diff --git a/arch/wasm/drivers/wasmnet.c b/arch/wasm/drivers/wasmnet.c
+new file mode 100644
+index 000000000..40b3d8644
+--- /dev/null
++++ b/arch/wasm/drivers/wasmnet.c
+@@ -0,0 +1,160 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Ethernet device on the host (eth0).
++ *
++ * Frames travel through two rings of fixed-size slots in shared memory.
++ * Transmit: the kernel copies a frame into the next tx slot, advances
++ * tx.head and notifies; the host's network worker consumes from tx.tail.
++ * Receive: the host fills rx slots, advances rx.head and raises
++ * WASM_IRQ_NET; the interrupt hands the frames to the stack.
++ *
++ * The host side (public/js/net.js) is a small router with NAT: it answers
++ * ARP and DHCP-less static addressing (see /etc/rc), and relays TCP and UDP
++ * to the real network through the page server.
++ */
++
++#include <linux/etherdevice.h>
++#include <linux/init.h>
++#include <linux/interrupt.h>
++#include <linux/module.h>
++#include <linux/netdevice.h>
++
++#include <asm/wasm.h>
++
++#define WASM_NET_SLOTS		256	/* per ring, power of two */
++#define WASM_NET_SLOT_SIZE	2048	/* u32 length + frame */
++#define WASM_NET_MTU		1500
++
++struct wasm_net_ring {
++	u32 head;		/* producer */
++	u32 tail;		/* consumer */
++	u8 slot[WASM_NET_SLOTS][WASM_NET_SLOT_SIZE];
++};
++
++/* shared with the host; layout is ABI (public/js/net.js) */
++struct wasm_net_state {
++	u8 mac[8];		/* host: our MAC address (6 bytes) */
++	u32 link;		/* host: carrier */
++	u32 pad;
++	struct wasm_net_ring tx;
++	struct wasm_net_ring rx;
++};
++
++static struct wasm_net_state wasm_net __aligned(8);
++static struct net_device *wasm_net_dev;
++
++static netdev_tx_t wasm_net_xmit(struct sk_buff *skb, struct net_device *dev)
++{
++	struct wasm_net_ring *r = &wasm_net.tx;
++	u32 head = r->head;
++	u32 tail = __atomic_load_n(&r->tail, __ATOMIC_ACQUIRE);
++	u8 *slot;
++
++	if (skb->len > WASM_NET_SLOT_SIZE - 4 || head - tail >= WASM_NET_SLOTS) {
++		/* host not keeping up: drop, like a full NIC queue */
++		dev->stats.tx_dropped++;
++		dev_kfree_skb_any(skb);
++		return NETDEV_TX_OK;
++	}
++	slot = r->slot[head % WASM_NET_SLOTS];
++	*(u32 *)slot = skb->len;
++	skb_copy_bits(skb, 0, slot + 4, skb->len);
++	__atomic_store_n(&r->head, head + 1, __ATOMIC_RELEASE);
++	wasm_notify(&r->head);
++
++	dev->stats.tx_packets++;
++	dev->stats.tx_bytes += skb->len;
++	dev_kfree_skb_any(skb);
++	return NETDEV_TX_OK;
++}
++
++static irqreturn_t wasm_net_irq(int irq, void *dev_id)
++{
++	struct net_device *dev = dev_id;
++	struct wasm_net_ring *r = &wasm_net.rx;
++	u32 head = __atomic_load_n(&r->head, __ATOMIC_ACQUIRE);
++	u32 tail = r->tail;
++
++	while (tail != head) {
++		u8 *slot = r->slot[tail % WASM_NET_SLOTS];
++		u32 len = *(u32 *)slot;
++		struct sk_buff *skb;
++
++		tail++;
++		if (len < ETH_HLEN || len > WASM_NET_SLOT_SIZE - 4) {
++			dev->stats.rx_length_errors++;
++			continue;
++		}
++		skb = netdev_alloc_skb_ip_align(dev, len);
++		if (!skb) {
++			dev->stats.rx_dropped++;
++			continue;
++		}
++		skb_put_data(skb, slot + 4, len);
++		skb->protocol = eth_type_trans(skb, dev);
++		dev->stats.rx_packets++;
++		dev->stats.rx_bytes += len;
++		netif_rx(skb);
++	}
++	__atomic_store_n(&r->tail, tail, __ATOMIC_RELEASE);
++	if (READ_ONCE(wasm_net.link))
++		netif_carrier_on(dev);
++	return IRQ_HANDLED;
++}
++
++static int wasm_net_open(struct net_device *dev)
++{
++	netif_carrier_on(dev);
++	netif_start_queue(dev);
++	return 0;
++}
++
++static int wasm_net_stop(struct net_device *dev)
++{
++	netif_stop_queue(dev);
++	return 0;
++}
++
++static const struct net_device_ops wasm_net_ops = {
++	.ndo_open		= wasm_net_open,
++	.ndo_stop		= wasm_net_stop,
++	.ndo_start_xmit		= wasm_net_xmit,
++	.ndo_set_mac_address	= eth_mac_addr,
++	.ndo_validate_addr	= eth_validate_addr,
++};
++
++static int __init wasm_net_init(void)
++{
++	struct net_device *dev;
++	int ret;
++
++	dev = alloc_etherdev(0);
++	if (!dev)
++		return -ENOMEM;
++	dev->netdev_ops = &wasm_net_ops;
++	dev->mtu = WASM_NET_MTU;
++	dev->max_mtu = WASM_NET_MTU;
++
++	/* the host may set a MAC before it sees the device; else random */
++	wasm_host_dev_register("net", &wasm_net);
++	if (is_valid_ether_addr(wasm_net.mac))
++		eth_hw_addr_set(dev, wasm_net.mac);
++	else
++		eth_hw_addr_random(dev);
++
++	ret = request_irq(WASM_IRQ_NET, wasm_net_irq, 0, "wasmnet", dev);
++	if (ret)
++		goto err;
++	ret = register_netdev(dev);
++	if (ret)
++		goto err_irq;
++	wasm_net_dev = dev;
++	return 0;
++
++err_irq:
++	free_irq(WASM_IRQ_NET, dev);
++err:
++	free_netdev(dev);
++	return ret;
++}
++device_initcall(wasm_net_init);
+-- 
+2.43.0
+

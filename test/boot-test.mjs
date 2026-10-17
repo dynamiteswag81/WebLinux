@@ -9,7 +9,8 @@
 // {"kbd": "text"} types text + Enter on the canvas instead (keyboard
 // device, frame buffer console); {"sleep": ms} just waits; {"reload": 1}
 // reloads the page (a new boot, same browser storage).  --shot saves a
-// screenshot of the canvas at the end.  The default checks that
+// screenshot of the canvas at the end.  @PORT@ in an input becomes the
+// page server's port (reachable from the guest as 10.0.2.2).  The default checks that
 // bash comes up and runs a pipeline.
 
 import { spawn } from 'child_process';
@@ -66,7 +67,8 @@ try {
     } else if (input && input.sleep) {
       await new Promise((r) => setTimeout(r, input.sleep));
     } else if (input !== null) {
-      await page.evaluate((s) => self.machine.consoleInput(s + '\n'), input);
+      const text = input.replaceAll('@PORT@', String(PORT));
+      await page.evaluate((s) => self.machine.consoleInput(s + '\n'), text);
     }
     const t0 = Date.now();
     for (;;) {
