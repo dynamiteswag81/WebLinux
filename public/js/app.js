@@ -1,6 +1,7 @@
 // WebLinux page: boots the machine and wires up the console.
 
 import { Machine } from './machine.js';
+import { Screen } from './screen.js';
 
 const $ = (id) => document.getElementById(id);
 const log = $('log');
@@ -9,9 +10,16 @@ const status = $('status');
 const params = new URLSearchParams(location.search);
 const machine = new Machine({
   memoryMiB: Number(params.get('mem')) || 512,
-  cmdline: params.get('cmdline') || 'console=ttyW0 rdinit=/init loglevel=7',
+  cmdline: (params.get('cmdline') || 'console=ttyW0 rdinit=/init loglevel=7')
+    + (params.get('mode') ? ` wasmfb.mode=${params.get('mode')}` : ''),
 });
 self.machine = machine; // handy from devtools
+const screen = new Screen(machine, $('screen'));
+// once the frame buffer is up, the canvas is the main console
+$('screen').addEventListener('fbattach', () => {
+  $('bootlog').classList.add('hidden');
+  $('screen').focus();
+});
 
 const ANSI = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[()][0-9A-Za-z]|\r/g;
 let pending = '';

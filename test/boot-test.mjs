@@ -1,11 +1,14 @@
 // Headless boot test: serves public/, boots WebLinux in Chromium and drives
 // the console.  Needs the playwright package (NODE_PATH or a local install).
 //
-//   node test/boot-test.mjs [steps.json] [--log out.txt]
+//   node test/boot-test.mjs [steps.json] [--log out.txt] [--shot out.png]
 //
 // steps.json is a list of [input, expected] pairs: send `input` + "\n"
 // (null sends nothing), then wait until the console output contains
-// `expected` (a string, searched after the previous match).  The default checks that
+// `expected` (a string, searched after the previous match).  An input of
+// {"kbd": "text"} types text + Enter on the canvas instead (keyboard
+// device, frame buffer console); {"sleep": ms} just waits.  --shot saves a
+// screenshot of the canvas at the end.  The default checks that
 // bash comes up and runs a pipeline.
 
 import { spawn } from 'child_process';
@@ -20,6 +23,8 @@ const ROOT = path.join(path.dirname(new URL(import.meta.url).pathname), '..');
 const args = process.argv.slice(2);
 const li = args.indexOf('--log');
 const logFile = li >= 0 ? args.splice(li, 2)[1] : null;
+const si = args.indexOf('--shot');
+const shotFile = si >= 0 ? args.splice(si, 2)[1] : null;
 const steps = args[0] ? JSON.parse(fs.readFileSync(args[0], 'utf8')) : [
   [null, 'weblinux:/# '],
   ['echo $((6*7)) | { read x; echo got$x; }', 'got42'],
@@ -32,8 +37,9 @@ const server = spawn(process.execPath, [path.join(ROOT, 'server.js'), String(POR
 let out = '';
 let ok = false;
 const browser = await chromium.launch();
+let page;
 try {
-  const page = await browser.newPage();
+  page = await browser.newPage({ viewport: { width: 1100, height: 850 } });
   page.on('pageerror', (e) => { out += `\n[pageerror] ${e.message}\n`; });
   await new Promise((r) => setTimeout(r, 300));
   await page.goto(`http://127.0.0.1:${PORT}/`);
@@ -47,7 +53,15 @@ try {
   });
   let from = 0;
   for (const [input, expect] of steps) {
-    if (input !== null) await page.evaluate((s) => self.machine.consoleInput(s + '\n'), input);
+    if (input && input.kbd !== undefined) {
+      await page.focus('#screen');
+      await page.keyboard.type(input.kbd, { delay: 5 });
+      await page.keyboard.press('Enter');
+    } else if (input && input.sleep) {
+      await new Promise((r) => setTimeout(r, input.sleep));
+    } else if (input !== null) {
+      await page.evaluate((s) => self.machine.consoleInput(s + '\n'), input);
+    }
     const t0 = Date.now();
     for (;;) {
       out = await page.evaluate(() => self.__out);
@@ -63,6 +77,7 @@ try {
   console.log(`FAIL: ${e.message}`);
   if (!logFile) console.log(out.slice(-1500));
 } finally {
+  if (shotFile && page) await page.locator('#screen').screenshot({ path: shotFile }).catch(() => {});
   if (logFile) fs.writeFileSync(logFile, out);
   await browser.close();
   server.kill();

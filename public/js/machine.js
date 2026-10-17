@@ -120,6 +120,28 @@ export class Machine extends EventTarget {
     this.raiseIrq(1);
   }
 
+  // Queue input events [dev, type, code, value] (see arch/wasm/drivers/wasminput.c).
+  inputEvents(evs) {
+    const base = this.dev.input;
+    if (!base) return;
+    const RING = 1024;
+    const hIdx = base >> 2;
+    let head = Atomics.load(this.i32, hIdx) >>> 0;
+    const tail = Atomics.load(this.i32, hIdx + 1) >>> 0;
+    const dv = this.dv || (this.dv = new DataView(this.memory.buffer));
+    for (const [d, type, code, value] of evs) {
+      if (((head - tail) >>> 0) >= RING) break;
+      const p = base + 8 + (head % RING) * 12;
+      dv.setUint16(p, d, true);
+      dv.setUint16(p + 2, type, true);
+      dv.setUint16(p + 4, code, true);
+      dv.setInt32(p + 8, value, true);
+      head = (head + 1) >>> 0;
+    }
+    Atomics.store(this.i32, hIdx, head | 0);
+    this.raiseIrq(2);
+  }
+
   raiseIrq(n) {
     const idx = this.dev.irq >> 2;
     Atomics.or(this.i32, idx, 1 << n);

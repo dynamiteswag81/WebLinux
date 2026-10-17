@@ -1,0 +1,8 @@
+[
+ [null, "weblinux:/# "],
+ [{"sleep": 1500}, ""],
+ [{"kbd": "echo from-canvas-$((3*4)) > /tmp/k; ls --color=always /"}, ""],
+ [{"sleep": 1500}, ""],
+ ["cat /tmp/k", "from-canvas-12"],
+ ["cat /sys/class/graphics/fb0/virtual_size /proc/bus/input/devices | grep -c WebLinux", "2"]
+]

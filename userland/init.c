@@ -2,9 +2,10 @@
  * WebLinux /sbin/init.
  *
  * Mounts the virtual file systems, runs /etc/rc once, then keeps a login
- * bash on the console: each shell gets its own session with ttyW0 as the
- * controlling terminal, so job control works.  Reaps orphans and respawns
- * the shell when it exits.
+ * bash on each console: ttyW0 (the host's debug console) and tty1 (the
+ * frame buffer console, if there is one).  Each shell gets its own session
+ * with its tty as the controlling terminal, so job control works.  Reaps
+ * orphans and respawns shells when they exit.
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -17,10 +18,19 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#define CONSOLE "/dev/ttyW0"
+struct console {
+	const char *dev;
+	char *term;
+	pid_t shell;
+};
 
-static char *const shell_env[] = {
-	"HOME=/root", "TERM=dumb", "SHELL=/bin/bash", "USER=root", "LOGNAME=root",
+static struct console consoles[] = {
+	{ "/dev/ttyW0", "TERM=dumb", -1 },
+	{ "/dev/tty1", "TERM=linux", -1 },
+};
+
+static char *shell_env[] = {
+	"TERM=dumb", "HOME=/root", "SHELL=/bin/bash", "USER=root", "LOGNAME=root",
 	"PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", NULL
 };
 
@@ -33,24 +43,21 @@ static void mnt(const char *src, const char *dir, const char *type,
 }
 
 /* Child side of the vfork: only syscalls, then exec. */
-static pid_t spawn(char *const argv[], int ctty)
+static pid_t spawn(char *const argv[], const struct console *con)
 {
+	shell_env[0] = con->term;
 	pid_t pid = vfork();
 	if (pid == 0) {
 		setsid();
-		if (ctty) {
-			int fd = open(CONSOLE, O_RDWR);
-			if (fd < 0)
-				fd = open("/dev/console", O_RDWR);
-			if (fd >= 0) {
-				ioctl(fd, TIOCSCTTY, 1);
-				dup2(fd, 0);
-				dup2(fd, 1);
-				dup2(fd, 2);
-				if (fd > 2)
-					close(fd);
-			}
-		}
+		int fd = open(con->dev, O_RDWR);
+		if (fd < 0)
+			_exit(126);
+		ioctl(fd, TIOCSCTTY, 1);
+		dup2(fd, 0);
+		dup2(fd, 1);
+		dup2(fd, 2);
+		if (fd > 2)
+			close(fd);
 		execve(argv[0], argv, shell_env);
 		_exit(127);
 	}
@@ -61,7 +68,7 @@ int main(void)
 {
 	static char *const rc[] = { "/bin/bash", "/etc/rc", NULL };
 	static char *const sh[] = { "/bin/bash", "--login", NULL };
-	pid_t shell = -1;
+	unsigned int i, n = 0;
 	int st;
 
 	if (getpid() != 1)
@@ -75,25 +82,33 @@ int main(void)
 	mnt("tmpfs", "/run", "tmpfs", MS_NOSUID | MS_NODEV, "mode=0755");
 
 	if (access(rc[1], R_OK) == 0) {
-		pid_t p = spawn(rc, 1);
+		pid_t p = spawn(rc, &consoles[0]);
 		while (p > 0 && waitpid(p, &st, 0) < 0 && errno == EINTR)
 			;
 	}
 
+	/* consoles that exist */
+	for (i = 0; i < sizeof(consoles) / sizeof(consoles[0]); i++)
+		if (access(consoles[i].dev, R_OK | W_OK) == 0)
+			consoles[n++] = consoles[i];
+
 	for (;;) {
-		if (shell < 0) {
-			shell = spawn(sh, 1);
-			if (shell < 0) {
-				sleep(1);
-				continue;
-			}
-		}
+		for (i = 0; i < n; i++)
+			if (consoles[i].shell < 0)
+				consoles[i].shell = spawn(sh, &consoles[i]);
 		pid_t p = wait(&st);
-		if (p == shell) {
-			shell = -1;
-			sleep(1);
-		} else if (p < 0 && errno == ECHILD) {
-			shell = -1;
+		if (p < 0) {
+			if (errno == ECHILD)
+				sleep(1);
+			continue;
+		}
+		for (i = 0; i < n; i++) {
+			if (p == consoles[i].shell) {
+				consoles[i].shell = -1;
+				/* don't spin if the shell can't start */
+				if (WIFEXITED(st) && WEXITSTATUS(st) >= 126)
+					sleep(5);
+			}
 		}
 	}
 }

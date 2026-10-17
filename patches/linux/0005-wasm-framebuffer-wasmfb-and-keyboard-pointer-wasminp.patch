@@ -1,0 +1,401 @@
+From 1489c237d855900f82f69ca19830d2c61eb8ee5f Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 17 Oct 2026 18:06:41 +0000
+Subject: [PATCH] wasm: framebuffer (wasmfb) and keyboard/pointer (wasminput)
+ drivers
+
+wasmfb: XRGB8888 fbdev in kernel memory that the host blits to the page's
+canvas every frame; direct mmap on !MMU via get_unmapped_area; mode from
+wasmfb.mode=WxH.  wasminput: a keyboard and an absolute pointer fed from
+a shared event ring and WASM_IRQ_INPUT.  defconfig: FB, fbcon (VT),
+evdev.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/wasm/configs/wasm_defconfig |  11 +-
+ arch/wasm/drivers/Kconfig        |  16 +++
+ arch/wasm/drivers/Makefile       |   2 +
+ arch/wasm/drivers/wasmfb.c       | 176 +++++++++++++++++++++++++++++++
+ arch/wasm/drivers/wasminput.c    | 130 +++++++++++++++++++++++
+ 5 files changed, 333 insertions(+), 2 deletions(-)
+ create mode 100644 arch/wasm/drivers/wasmfb.c
+ create mode 100644 arch/wasm/drivers/wasminput.c
+
+diff --git a/arch/wasm/configs/wasm_defconfig b/arch/wasm/configs/wasm_defconfig
+index f6ee9f5da..63436a9d0 100644
+--- a/arch/wasm/configs/wasm_defconfig
++++ b/arch/wasm/configs/wasm_defconfig
+@@ -37,10 +37,17 @@ CONFIG_DEVTMPFS=y
+ CONFIG_DEVTMPFS_MOUNT=y
+ # CONFIG_FW_LOADER is not set
+ # CONFIG_ALLOW_DEV_COREDUMP is not set
+-# CONFIG_INPUT is not set
++CONFIG_INPUT_EVDEV=y
++# CONFIG_INPUT_KEYBOARD is not set
++# CONFIG_INPUT_MOUSE is not set
+ # CONFIG_SERIO is not set
+-# CONFIG_VT is not set
+ # CONFIG_LEGACY_PTYS is not set
++CONFIG_FB=y
++CONFIG_FRAMEBUFFER_CONSOLE=y
++CONFIG_FRAMEBUFFER_CONSOLE_DETECT_PRIMARY=y
++CONFIG_FONTS=y
++CONFIG_FONT_8x16=y
++CONFIG_FONT_TER16x32=y
+ # CONFIG_HW_RANDOM is not set
+ # CONFIG_HWMON is not set
+ # CONFIG_USB_SUPPORT is not set
+diff --git a/arch/wasm/drivers/Kconfig b/arch/wasm/drivers/Kconfig
+index caf1afa17..b452b6c99 100644
+--- a/arch/wasm/drivers/Kconfig
++++ b/arch/wasm/drivers/Kconfig
+@@ -6,3 +6,19 @@ config WASM_CONSOLE
+ 	default y
+ 	help
+ 	  Kernel messages and a tty on the host's debug terminal.
++
++config WASM_FB
++	bool "Framebuffer on the host canvas"
++	depends on FB
++	select FB_SYSMEM_HELPERS
++	select FB_PROVIDE_GET_FB_UNMAPPED_AREA
++	default y
++	help
++	  /dev/fb0, shown on the page's canvas.
++
++config WASM_INPUT
++	bool "Host keyboard and pointer"
++	depends on INPUT
++	default y
++	help
++	  Keyboard and absolute pointer events from the page.
+diff --git a/arch/wasm/drivers/Makefile b/arch/wasm/drivers/Makefile
+index 442f8fbe1..594c49165 100644
+--- a/arch/wasm/drivers/Makefile
++++ b/arch/wasm/drivers/Makefile
+@@ -1,2 +1,4 @@
+ # SPDX-License-Identifier: GPL-2.0
+ obj-$(CONFIG_WASM_CONSOLE) += console.o
++obj-$(CONFIG_WASM_FB) += wasmfb.o
++obj-$(CONFIG_WASM_INPUT) += wasminput.o
+diff --git a/arch/wasm/drivers/wasmfb.c b/arch/wasm/drivers/wasmfb.c
+new file mode 100644
+index 000000000..59749af3e
+--- /dev/null
++++ b/arch/wasm/drivers/wasmfb.c
+@@ -0,0 +1,176 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Framebuffer on the host's canvas.
++ *
++ * The frame buffer is ordinary kernel memory (XRGB8888).  The host learns
++ * its address through wasm_host_dev_register("fb") and copies it to the
++ * page's canvas on every animation frame, so there is nothing to flush:
++ * writes through write(2), mmap(2) (direct, the machine has no MMU) or
++ * fbcon all show up on the next frame.
++ *
++ * The mode is "wasmfb.mode=<width>x<height>" on the command line
++ * (default 1024x768).
++ */
++
++#include <linux/fb.h>
++#include <linux/init.h>
++#include <linux/mm.h>
++#include <linux/module.h>
++#include <linux/platform_device.h>
++
++#include <asm/wasm.h>
++
++/* shared with the host; layout is ABI (public/js/machine.js) */
++struct wasm_fb_state {
++	u32 addr;		/* frame buffer address in linear memory */
++	u32 width;
++	u32 height;
++	u32 stride;		/* bytes per line */
++	u32 format;		/* 0: XRGB8888, little endian */
++	u32 blank;		/* nonzero: screen blanked */
++};
++
++static struct wasm_fb_state wasmfb_state;
++
++static char *mode = "1024x768";
++module_param(mode, charp, 0444);
++MODULE_PARM_DESC(mode, "video mode, <width>x<height>");
++
++static u32 wasmfb_pseudo_palette[16];
++
++static int wasmfb_setcolreg(unsigned int regno, unsigned int red,
++			    unsigned int green, unsigned int blue,
++			    unsigned int transp, struct fb_info *info)
++{
++	if (regno >= 16)
++		return -EINVAL;
++	wasmfb_pseudo_palette[regno] = ((red >> 8) << 16) |
++				       ((green >> 8) << 8) | (blue >> 8);
++	return 0;
++}
++
++static int wasmfb_blank(int blank, struct fb_info *info)
++{
++	WRITE_ONCE(wasmfb_state.blank, blank != FB_BLANK_UNBLANK);
++	return 0;
++}
++
++/*
++ * No MMU: get_unmapped_area already placed the mapping on the frame buffer
++ * (nommu.c calls it for chardevs with NOMMU_MAP_DIRECT), so accept it.
++ */
++static int wasmfb_mmap(struct fb_info *info, struct vm_area_struct *vma)
++{
++	unsigned long off = vma->vm_pgoff << PAGE_SHIFT;
++	unsigned long len = vma->vm_end - vma->vm_start;
++
++	if (off > info->fix.smem_len || len > info->fix.smem_len - off)
++		return -EINVAL;
++	if (vma->vm_start != (unsigned long)info->screen_base + off)
++		return -ENOSYS;
++	vm_flags_set(vma, VM_IO | VM_DONTEXPAND | VM_DONTDUMP);
++	return 0;
++}
++
++static const struct fb_ops wasmfb_ops = {
++	.owner		= THIS_MODULE,
++	__FB_DEFAULT_SYSMEM_OPS_RDWR,
++	__FB_DEFAULT_SYSMEM_OPS_DRAW,
++	.fb_setcolreg	= wasmfb_setcolreg,
++	.fb_blank	= wasmfb_blank,
++	.fb_mmap	= wasmfb_mmap,
++};
++
++static int wasmfb_probe(struct platform_device *pdev)
++{
++	unsigned int w = 1024, h = 768;
++	struct fb_info *info;
++	unsigned long size;
++	void *mem;
++	int ret;
++
++	if (sscanf(mode, "%ux%u", &w, &h) != 2 || w < 320 || h < 200 ||
++	    w > 4096 || h > 4096) {
++		pr_warn("wasmfb: bad mode \"%s\", using 1024x768\n", mode);
++		w = 1024;
++		h = 768;
++	}
++	size = PAGE_ALIGN(w * h * 4);
++	mem = alloc_pages_exact(size, GFP_KERNEL | __GFP_ZERO);
++	if (!mem)
++		return -ENOMEM;
++
++	info = framebuffer_alloc(0, &pdev->dev);
++	if (!info) {
++		ret = -ENOMEM;
++		goto err_mem;
++	}
++	info->fbops = &wasmfb_ops;
++	info->flags = FBINFO_VIRTFB;
++	info->screen_buffer = mem;
++	info->screen_size = size;
++	info->pseudo_palette = wasmfb_pseudo_palette;
++
++	strscpy(info->fix.id, "wasmfb", sizeof(info->fix.id));
++	info->fix.type = FB_TYPE_PACKED_PIXELS;
++	info->fix.visual = FB_VISUAL_TRUECOLOR;
++	info->fix.line_length = w * 4;
++	info->fix.smem_start = (unsigned long)mem;
++	info->fix.smem_len = size;
++	info->fix.accel = FB_ACCEL_NONE;
++
++	info->var.xres = info->var.xres_virtual = w;
++	info->var.yres = info->var.yres_virtual = h;
++	info->var.bits_per_pixel = 32;
++	info->var.red = (struct fb_bitfield){ 16, 8, 0 };
++	info->var.green = (struct fb_bitfield){ 8, 8, 0 };
++	info->var.blue = (struct fb_bitfield){ 0, 8, 0 };
++	info->var.transp = (struct fb_bitfield){ 0, 0, 0 };
++	info->var.activate = FB_ACTIVATE_NOW;
++	info->var.height = info->var.width = -1;
++	info->var.vmode = FB_VMODE_NONINTERLACED;
++	/* nominal 60 Hz timings, for programs that compute a refresh rate */
++	info->var.pixclock = 1000000000U / (w * h / 1000 * 60 + 1);	/* ps */
++
++	ret = register_framebuffer(info);
++	if (ret)
++		goto err_info;
++	platform_set_drvdata(pdev, info);
++
++	wasmfb_state.width = w;
++	wasmfb_state.height = h;
++	wasmfb_state.stride = w * 4;
++	wasmfb_state.format = 0;
++	WRITE_ONCE(wasmfb_state.addr, (u32)(unsigned long)mem);
++	wasm_host_dev_register("fb", &wasmfb_state);
++	fb_info(info, "%ux%u XRGB8888 at %p\n", w, h, mem);
++	return 0;
++
++err_info:
++	framebuffer_release(info);
++err_mem:
++	free_pages_exact(mem, size);
++	return ret;
++}
++
++static struct platform_driver wasmfb_driver = {
++	.probe	= wasmfb_probe,
++	.driver	= { .name = "wasmfb" },
++};
++
++static int __init wasmfb_init(void)
++{
++	struct platform_device *pdev;
++	int ret;
++
++	ret = platform_driver_register(&wasmfb_driver);
++	if (ret)
++		return ret;
++	pdev = platform_device_register_simple("wasmfb", -1, NULL, 0);
++	if (IS_ERR(pdev)) {
++		platform_driver_unregister(&wasmfb_driver);
++		return PTR_ERR(pdev);
++	}
++	return 0;
++}
++device_initcall(wasmfb_init);
+diff --git a/arch/wasm/drivers/wasminput.c b/arch/wasm/drivers/wasminput.c
+new file mode 100644
+index 000000000..592d607f1
+--- /dev/null
++++ b/arch/wasm/drivers/wasminput.c
+@@ -0,0 +1,130 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Keyboard and pointer of the host page.
++ *
++ * The host translates DOM events into Linux input events and appends them
++ * to a ring in shared memory, then raises WASM_IRQ_INPUT.  Two devices:
++ *   0: keyboard (all KEY_* codes; the host maps KeyboardEvent.code),
++ *   1: pointer, absolute 0..WASM_INPUT_ABS_MAX on both axes like a
++ *      tablet, with left/right/middle buttons and a wheel.
++ * The host ends each packet with an EV_SYN/SYN_REPORT event.
++ */
++
++#include <linux/init.h>
++#include <linux/input.h>
++#include <linux/interrupt.h>
++#include <linux/module.h>
++
++#include <asm/wasm.h>
++
++#define WASM_INPUT_RING		1024	/* events, power of two */
++#define WASM_INPUT_ABS_MAX	32767
++
++struct wasm_input_event {
++	u16 dev;
++	u16 type;
++	u16 code;
++	u16 pad;
++	s32 value;
++};
++
++/* shared with the host; layout is ABI (public/js/machine.js) */
++struct wasm_input_ring {
++	u32 head;		/* written by the host */
++	u32 tail;		/* written by the kernel */
++	struct wasm_input_event ev[WASM_INPUT_RING];
++};
++
++static struct wasm_input_ring wasm_input_ring;
++static struct input_dev *wasm_input_devs[2];
++
++static irqreturn_t wasm_input_irq(int irq, void *dev_id)
++{
++	u32 head = __atomic_load_n(&wasm_input_ring.head, __ATOMIC_ACQUIRE);
++	u32 tail = wasm_input_ring.tail;
++
++	while (tail != head) {
++		struct wasm_input_event *e =
++			&wasm_input_ring.ev[tail % WASM_INPUT_RING];
++
++		if (e->dev < ARRAY_SIZE(wasm_input_devs) && wasm_input_devs[e->dev])
++			input_event(wasm_input_devs[e->dev], e->type, e->code,
++				    e->value);
++		tail++;
++	}
++	__atomic_store_n(&wasm_input_ring.tail, tail, __ATOMIC_RELEASE);
++	return IRQ_HANDLED;
++}
++
++static struct input_dev *__init wasm_input_new(const char *name, u16 product)
++{
++	struct input_dev *dev = input_allocate_device();
++
++	if (!dev)
++		return NULL;
++	dev->name = name;
++	dev->phys = "wasm/input0";
++	dev->id.bustype = BUS_HOST;
++	dev->id.vendor = 0x7761;	/* "wa" */
++	dev->id.product = product;
++	dev->id.version = 1;
++	return dev;
++}
++
++static int __init wasm_input_init(void)
++{
++	struct input_dev *kbd, *ptr;
++	int i, ret;
++
++	kbd = wasm_input_new("WebLinux keyboard", 1);
++	ptr = wasm_input_new("WebLinux pointer", 2);
++	if (!kbd || !ptr) {
++		ret = -ENOMEM;
++		goto err;
++	}
++
++	__set_bit(EV_KEY, kbd->evbit);
++	__set_bit(EV_REP, kbd->evbit);
++	for (i = KEY_ESC; i < BTN_MISC; i++)
++		__set_bit(i, kbd->keybit);
++	for (i = KEY_OK; i < BTN_DPAD_UP; i++)
++		__set_bit(i, kbd->keybit);
++
++	__set_bit(EV_KEY, ptr->evbit);
++	__set_bit(EV_ABS, ptr->evbit);
++	__set_bit(EV_REL, ptr->evbit);
++	__set_bit(BTN_LEFT, ptr->keybit);
++	__set_bit(BTN_RIGHT, ptr->keybit);
++	__set_bit(BTN_MIDDLE, ptr->keybit);
++	__set_bit(REL_WHEEL, ptr->relbit);
++	__set_bit(REL_HWHEEL, ptr->relbit);
++	__set_bit(INPUT_PROP_POINTER, ptr->propbit);
++	input_set_abs_params(ptr, ABS_X, 0, WASM_INPUT_ABS_MAX, 0, 0);
++	input_set_abs_params(ptr, ABS_Y, 0, WASM_INPUT_ABS_MAX, 0, 0);
++
++	ret = input_register_device(kbd);
++	if (ret)
++		goto err;
++	wasm_input_devs[0] = kbd;
++	ret = input_register_device(ptr);
++	if (ret) {
++		ptr = NULL;	/* freed below as unregistered */
++		goto err_kbd;
++	}
++	wasm_input_devs[1] = ptr;
++
++	ret = request_irq(WASM_IRQ_INPUT, wasm_input_irq, 0, "input", NULL);
++	if (ret)
++		pr_err("wasm input: no irq (%d)\n", ret);
++	wasm_host_dev_register("input", &wasm_input_ring);
++	return 0;
++
++err_kbd:
++	input_unregister_device(kbd);
++	kbd = NULL;
++err:
++	input_free_device(kbd);
++	input_free_device(ptr);
++	return ret;
++}
++device_initcall(wasm_input_init);
+-- 
+2.43.0
+
