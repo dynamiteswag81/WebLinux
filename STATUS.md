@@ -69,6 +69,12 @@ and applies `patches/linux/` (see CLAUDE.md).
 - LLVM 20 crashes on asm `.set` aliases in wasm objects (kernel patch 0004 avoids them).
 
 ## Toolchain (Windows, no WSL/Docker, virtualization disabled in BIOS)
+Not re-tested since the Linux session of 2026-10-17. The scripts default to `W=/wl` and the old
+SYSROOT, so they should still run in MSYS2; the newer ones also need (pacman) cmake, gperf, perl,
+pkg-config, zstd and a host `cc`; `mkrootfs.sh` skips the CA bundle when
+`/usr/share/ca-certificates/mozilla` is missing (copy one in by hand). Easiest is to keep
+building in a Linux cloud session (`build/setup-linux.sh`).
+
 - MSYS2 lives at `C:\Users\dynam\wltools\msys64`, with LLVM 23 (CLANG64) and Binaryen 133 (`wasm-opt`).
 - Run commands in MSYS2 from Git Bash with `/c/Users/dynam/wltools/m <<'X' ... X`, or `m < script.sh`.
 - The project is mounted at `/wl` in MSYS2 through fstab.
