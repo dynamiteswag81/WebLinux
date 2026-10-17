@@ -16,6 +16,7 @@ export class Machine extends EventTarget {
     this.disk = { backend: opts.disk || 'opfs', name: opts.diskName || 'disk0.img',
       sizeMiB: opts.diskSizeMiB || 256 };
     this.workers = new Map();     // wctl address -> Worker
+    this.modules = new Map();     // compiled user programs, by content
     this.dev = {};                // device name -> address in memory
     this.timer = null;
     this.halted = false;
@@ -49,6 +50,7 @@ export class Machine extends EventTarget {
     w.postMessage({
       ...msg,
       module: this.kmodule,
+      modules: this.modules,
       memory: this.memory,
       clock: this.clock,
       base: this.base,
@@ -66,6 +68,12 @@ export class Machine extends EventTarget {
     switch (m.t) {
       case 'console':
         this._emit('console', m.s);
+        break;
+      case 'module':
+        // keep the 64 most recent programs
+        this.modules.delete(m.key);
+        this.modules.set(m.key, m.mod);
+        if (this.modules.size > 64) this.modules.delete(this.modules.keys().next().value);
         break;
       case 'spawn':
         this._spawn({ role: 'task', task: m.task, wctl: m.wctl, ksp: m.ksp, tls: m.tls }, m.wctl);

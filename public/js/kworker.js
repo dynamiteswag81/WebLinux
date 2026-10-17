@@ -15,7 +15,8 @@
 let memory, u8, dv, kx, clock, BASE, CMDLINE, initrd, kmodule;
 let kernelSP = 0;        // shadow stack top of this worker's kernel instance
 let user = null;         // the running user program, if any
-const moduleCache = new Map();
+// compiled user programs; shared through the machine with every new worker
+let moduleCache = new Map();
 
 const td = new TextDecoder();
 const te = new TextEncoder();
@@ -167,6 +168,7 @@ function prepareUser(info) {
   if (!mod) {
     mod = new WebAssembly.Module(bytes);
     moduleCache.set(key, mod);
+    post({ t: 'module', key, mod });
   }
   const table = new WebAssembly.Table({ element: 'anyfunc', initial: 1 + info.table_size });
   const inst = new WebAssembly.Instance(mod, userImports(mod, info, table));
@@ -302,6 +304,7 @@ self.onmessage = (ev) => {
   const d = ev.data;
   memory = d.memory;
   kmodule = d.module;
+  if (d.modules) moduleCache = d.modules;
   clock = new BigInt64Array(d.clock);
   BASE = d.base;
   u8 = new Uint8Array(memory.buffer);
