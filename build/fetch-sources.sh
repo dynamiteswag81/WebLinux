@@ -82,6 +82,16 @@ pool main/c/curl/curl_8.20.0.orig.tar.gz curl
 pool main/libp/libpng1.6/libpng1.6_1.6.59.orig.tar.gz libpng
 pool main/libj/libjpeg-turbo/libjpeg-turbo_3.1.3.orig.tar.gz libjpeg-turbo
 pool main/e/expat/expat_2.8.3.orig.tar.gz expat
+pool main/f/freetype/freetype_2.14.3+dfsg.orig.tar.xz freetype
+# DejaVu TrueType fonts for NetSurf: the font files of Ubuntu's package
+if [ ! -d src/fonts-dejavu ]; then
+	f=fonts-dejavu-core_2.37-8build1_all.deb
+	[ -f "$DL/$f" ] || curl -fL --retry 3 -o "$DL/$f" "$UBU/main/f/fonts-dejavu/$f"
+	rm -rf src/fonts-dejavu.tmp && mkdir -p src/fonts-dejavu.tmp
+	(cd src/fonts-dejavu.tmp && ar x "../../$DL/$f" && zstd -dcq data.tar.zst | tar xf -)
+	mv src/fonts-dejavu.tmp/usr/share/fonts/truetype/dejavu src/fonts-dejavu
+	rm -rf src/fonts-dejavu.tmp
+fi
 
 # compiler-rt builtins (sparse llvm-project checkout, pinned)
 if [ ! -d src/llvm-rt ]; then

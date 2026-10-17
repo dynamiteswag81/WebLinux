@@ -2,7 +2,7 @@
 # Cross-build NetSurf's framebuffer frontend and everything it needs into
 # $SYSROOT, then the browser itself into build/obj/netsurf/netsurf.
 #   sh build/build-netsurf.sh [step...]     (default: all steps in order)
-# Steps: zlib mbedtls curl png jpeg expat nslibs netsurf.  Logs: build/obj/netsurf/*.log
+# Steps: zlib mbedtls curl png jpeg expat freetype nslibs netsurf.  Logs: build/obj/netsurf/*.log
 set -e
 . "${W:-/wl}/build/env.sh"
 O=$W/build/obj/netsurf
@@ -80,6 +80,18 @@ step_expat() {
 	make -j8 >> $O/expat.log 2>&1 && make install >> $O/expat.log 2>&1 || fail expat $O/expat.log
 }
 
+step_freetype() {
+	mkdir -p $O/freetype && cd $O/freetype
+	cmake $W/src/freetype -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=wasm32 \
+		-DCMAKE_C_COMPILER=$W/build/wasm-cc -DCMAKE_AR=$(command -v llvm-ar) \
+		-DCMAKE_RANLIB=$(command -v llvm-ranlib) -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
+		-DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$SYSROOT" -DBUILD_SHARED_LIBS=OFF \
+		-DZLIB_LIBRARY="$SYSROOT/lib/libz.a" -DZLIB_INCLUDE_DIR="$SYSROOT/include" \
+		-DFT_REQUIRE_ZLIB=ON -DFT_DISABLE_BZIP2=ON -DFT_DISABLE_PNG=ON -DFT_DISABLE_HARFBUZZ=ON \
+		-DFT_DISABLE_BROTLI=ON > $O/freetype.log 2>&1 || fail freetype $O/freetype.log
+	make -j8 >> $O/freetype.log 2>&1 && make install >> $O/freetype.log 2>&1 || fail freetype $O/freetype.log
+}
+
 NS=$W/src/netsurf-all-3.11
 NSHOST=wasm32-unknown-linux-musl
 NSLIBS="libnslog libwapcaplet libparserutils libcss libhubbub libdom libnsbmp libnsgif
@@ -112,27 +124,34 @@ step_nslibs() {
 	done
 }
 
+NSOPTS="NETSURF_FB_FRONTEND=linux NETSURF_FB_FONTLIB=freetype
+	NETSURF_FB_FONTPATH=/usr/share/fonts/truetype/dejavu NETSURF_USE_DUKTAPE=${NETSURF_JS:-YES}
+	NETSURF_USE_OPENSSL=NO NETSURF_USE_LIBICONV_PLUG=NO NETSURF_USE_WEBP=NO NETSURF_USE_JPEGXL=NO
+	NETSURF_USE_ROSPRITE=NO NETSURF_USE_VIDEO=NO"
+
 step_netsurf() {
 	apply_patches
+	# the frontend's objects depend on the options: rebuild when they change
+	if [ "$(cat $O/netsurf.config 2>/dev/null)" != "$NSOPTS" ]; then
+		rm -rf $NS/netsurf/build
+		echo "$NSOPTS" > $O/netsurf.config
+	fi
 	make -C $NS/netsurf TARGET=framebuffer HOST=$NSHOST PREFIX=/usr Q= \
 		CC="$CC" BUILD_CC=cc AR=llvm-ar NSSHARED=$NS/buildsystem WARNFLAGS='-w' \
-		PATH="$O/host/bin:$PATH" \
-		NETSURF_FB_FRONTEND=linux NETSURF_USE_DUKTAPE=${NETSURF_JS:-YES} \
-		NETSURF_USE_OPENSSL=NO NETSURF_USE_LIBICONV_PLUG=NO NETSURF_USE_WEBP=NO \
-		NETSURF_USE_JPEGXL=NO NETSURF_USE_ROSPRITE=NO NETSURF_USE_VIDEO=NO \
+		PATH="$O/host/bin:$PATH" $NSOPTS \
 		NETSURF_FB_RESPATH='$${HOME}/.netsurf/:/usr/share/netsurf' \
 		> $O/netsurf.log 2>&1 || fail netsurf $O/netsurf.log
 	rm -rf $O/install
 	make -C $NS/netsurf install TARGET=framebuffer HOST=$NSHOST PREFIX=/usr DESTDIR=$O/install \
-		Q= CC="$CC" BUILD_CC=cc NSSHARED=$NS/buildsystem NETSURF_FB_FRONTEND=linux \
-		NETSURF_USE_DUKTAPE=${NETSURF_JS:-YES} NETSURF_USE_OPENSSL=NO NETSURF_USE_LIBICONV_PLUG=NO \
-		NETSURF_USE_WEBP=NO NETSURF_USE_JPEGXL=NO NETSURF_USE_ROSPRITE=NO \
+		Q= CC="$CC" BUILD_CC=cc AR=llvm-ar NSSHARED=$NS/buildsystem WARNFLAGS='-w' \
+		PATH="$O/host/bin:$PATH" $NSOPTS \
+		NETSURF_FB_RESPATH='$${HOME}/.netsurf/:/usr/share/netsurf' \
 		>> $O/netsurf.log 2>&1 || fail "netsurf install" $O/netsurf.log
 	llvm-strip --strip-debug -o $O/netsurf $NS/netsurf/nsfb
 	ls -la $O/netsurf; du -sh $O/install/usr/share/netsurf
 }
 
-for s in ${@:-zlib mbedtls curl png jpeg expat nslibs netsurf}; do
+for s in ${@:-zlib mbedtls curl png jpeg expat freetype nslibs netsurf}; do
 	echo "== $s"
 	step_$s
 done

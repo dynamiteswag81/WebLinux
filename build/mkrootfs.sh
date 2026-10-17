@@ -21,6 +21,8 @@ if [ -f $NSO/netsurf ]; then
 	mkdir -p $R/usr/share/netsurf
 	cp $NSO/install/usr/share/netsurf/* $R/usr/share/netsurf/
 	cp $W/rootfs/usr/share/netsurf/Choices $R/usr/share/netsurf/
+	mkdir -p $R/usr/share/fonts/truetype/dejavu
+	cp $W/src/fonts-dejavu/*.ttf $R/usr/share/fonts/truetype/dejavu/
 fi
 [ ! -f $NSO/curl/src/curl ] || cp $NSO/curl/src/curl $R/usr/bin/curl
 # root certificates for HTTPS (Mozilla's set, from the build machine)
