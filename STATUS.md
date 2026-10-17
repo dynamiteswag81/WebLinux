@@ -120,13 +120,29 @@ Nothing half done. Last verified (Linux cloud session, 2026-10-17), all with
 - `test/screen.json`: fbcon on the canvas (tty1, TERM=linux, colors), typing on the canvas.
   User programs can mmap /dev/fb0 (test/fbtest.c).
 - `test/persist.json`: a file written in /root survives a page reload (OPFS disk, overlay root).
+- `test/net.json`: ping, wget of a 4.4 MB file from the host through the NAT, refused port -> RST.
+- `test/audio.json`: /dev/dsp (OSS emulation over ALSA) plays in real time, Web Audio live.
+- `test/desktop.json`: wldesk on tty1, typing into its terminal, Menu -> Files by mouse.
 - BusyBox 1.37.0 (NOMMU, 353 applets) works.
+
+Desktop (`userland/desktop/`, `build/build-desktop.sh` -> `/usr/bin/wldesk`): one process on tty1
+(KD_GRAPHICS, K_OFF), back buffer copied to the mmapped fb (full redraw about 4 ms), evdev input.
+Windows (move, resize grip, minimize, close), taskbar, clock, menu, desktop icons; apps: terminal
+(pty + bash, `term.c` VT100/xterm subset, TERM=xterm, `/etc/termcap`), files, editor. "Web browser"
+runs `/usr/bin/netsurf` full screen when it exists. `wldesk --bench` times redraws.
+`weblinux.text` on the cmdline keeps a text shell on tty1 instead.
 
 Drivers (`linux/arch/wasm/drivers/`, host side in `public/js/`):
 - `wasmfb.c` / `screen.js`: XRGB8888 frame buffer in kernel memory, blitted every animation
   frame; `?mode=WxH` (kernel `wasmfb.mode=`). fbcon + VT on it.
 - `wasminput.c` / `screen.js` + `keymap.js`: keyboard (KeyboardEvent.code -> keycode, Shift
   synthesized for synthetic events) and absolute pointer + wheel; ring of 12-byte events.
+- `wasmnet.c` / `net.js` + `host/netrelay.js`: eth0 via tx/rx rings; JS NAT router
+  (10.0.2.15 guest, 10.0.2.2 gateway = the page server's machine, 10.0.2.3 DNS); every TCP
+  connection / UDP flow is one WebSocket to `server.js`'s relay, which opens the real socket.
+- `wasmsnd.c` / `audio.js` + `audio-worklet.js`: ALSA playback (S16_LE, 1-2 ch, 8-48 kHz);
+  the worklet reads the ring from shared memory, raises WASM_IRQ_SOUND per period.
+- entropy: `host.get_random` seeds the CRNG at boot.
 - `wasmblk.c` / `disk.js`: /dev/wda, one request at a time via a shared slot; the disk worker
   uses an OPFS sync access handle (`disk0.img`, 256 MiB default), falls back to memory.
   `?disk=opfs|mem|none`, `?disksize=MiB`. Init formats a blank disk with mke2fs, mounts it
@@ -143,13 +159,14 @@ Notes:
   don't churn.
 
 ## Next steps
-1. Network device (`wasmnet.c`): Ethernet frames through rx/tx rings + WASM_IRQ_NET; host side a
-   JS TCP/IP NAT in a worker plus a WebSocket relay in `server.js` (`host/netrelay.js`).
-2. Audio: ALSA PCM driver with a ring the host plays through an AudioWorklet.
-3. Lightweight desktop in C on fbdev + evdev: windows, taskbar, terminal (pty + bash),
-   file manager, editor. Started from `/etc/rc` or a `startx`-like command on tty1.
-4. NetSurf framebuffer frontend (needs curl, mbedtls or openssl, libpng, libjpeg, freetype).
-5. Shutdown: init should handle `poweroff`/`reboot` (BusyBox signals init: SIGUSR2/SIGTERM),
+1. NetSurf (framebuffer frontend, `/usr/bin/netsurf`): its libraries (libnsfb with a linux
+   fbdev+evdev surface, libcss, libdom, libhubbub, libparserutils, libwapcaplet, libnsutils,
+   libutf8proc, libnsbmp, libnsgif), plus zlib, libpng, libjpeg, curl and mbedtls/openssl.
+   Downloads: try Ubuntu's source pool (fetch-sources.sh style fallbacks).
+2. Shutdown: init should handle `poweroff`/`reboot` (BusyBox signals init: SIGUSR2/SIGTERM),
    sync, then reboot(2). Host: on `pagehide` ask the kernel to sync (IRQ_HOST + emergency sync).
-6. The page console (`<pre>`, ANSI stripped) is now only the debug console; the canvas is main.
-7. A start script (`start.bat`). (README.md written 2026-10-17; keep its status list current.)
+3. Desktop polish: clipboard with the host, mouse in the terminal (selection), icons for more
+   apps, wallpaper, a settings/about panel, time zone from the browser.
+4. Performance: the single CPU round trip per keystroke (desktop -> pty -> bash -> desktop)
+   is noticeable; look at scheduler/context switch cost.
+5. A start script (`start.bat`). Keep README.md's status list current.
