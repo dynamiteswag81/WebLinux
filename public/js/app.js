@@ -53,7 +53,31 @@ function appendLog(s) {
   }, 30);
 }
 
-machine.addEventListener('console', (e) => appendLog(e.detail));
+// OSC 52 on the debug console (ESC ] 52 ; c ; base64 BEL) sets the host's
+// clipboard: the desktop's terminal copies its selection this way.
+let oscHold = '';
+function consoleText(s) {
+  s = oscHold + s;
+  oscHold = '';
+  for (;;) {
+    const i = s.indexOf('\x1b]52;');
+    if (i < 0) break;
+    const m = /^\x1b\]52;[^;]*;([A-Za-z0-9+/=]*)(\x07|\x1b\\)/.exec(s.slice(i));
+    if (!m) {
+      if (s.length - i < 1 << 20) { oscHold = s.slice(i); s = s.slice(0, i); }
+      break;
+    }
+    try {
+      const bytes = Uint8Array.from(atob(m[1]), (c) => c.charCodeAt(0));
+      const text = new TextDecoder().decode(bytes);
+      self.lastCopied = text;
+      navigator.clipboard?.writeText(text).catch(() => {});
+    } catch (err) { /* bad base64: drop it */ }
+    s = s.slice(0, i) + s.slice(i + m[0].length);
+  }
+  appendLog(s);
+}
+machine.addEventListener('console', (e) => consoleText(e.detail));
 machine.addEventListener('log', (e) => appendLog(e.detail));
 machine.addEventListener('halt', (e) => {
   status.textContent = ['powered off', 'rebooting', 'kernel panic'][e.detail] || 'halted';

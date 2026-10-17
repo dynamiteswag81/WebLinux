@@ -96,6 +96,7 @@ static int menu_open;
 static pid_t fullscreen_pid;
 static volatile sig_atomic_t got_child;
 static struct { struct win *w; int dx, dy, resize; } drag;
+static struct win *mouse_capture;	/* gets moves and the release after a click */
 static struct { long long t; int x, y; } last_click;
 static int last_clock = -1;
 static long long last_redraw;
@@ -178,6 +179,8 @@ static void win_close(struct win *w)
 	}
 	if (drag.w == w)
 		drag.w = NULL;
+	if (mouse_capture == w)
+		mouse_capture = NULL;
 	surface_free(&w->surf);
 	free(w);
 	need_redraw = 1;
@@ -243,7 +246,85 @@ struct termapp {
 	struct term t;
 	int master;
 	pid_t pid;
+	int sel, sx0, sy0, sx1, sy1;	/* selection, in view cells */
 };
+
+/* is view cell (x, y) inside the selection? */
+static int term_selected(const struct termapp *a, int x, int y)
+{
+	int x0 = a->sx0, y0 = a->sy0, x1 = a->sx1, y1 = a->sy1;
+
+	if (!a->sel)
+		return 0;
+	if (y0 > y1 || (y0 == y1 && x0 > x1)) {
+		x0 = a->sx1, y0 = a->sy1, x1 = a->sx0, y1 = a->sy0;
+	}
+	if (y < y0 || y > y1)
+		return 0;
+	if (y == y0 && x < x0)
+		return 0;
+	if (y == y1 && x > x1)
+		return 0;
+	return 1;
+}
+
+/* Hand text to the host's clipboard: OSC 52 on the debug console, which
+ * the page turns into navigator.clipboard.writeText(). */
+static void host_clipboard(const char *s, int n)
+{
+	static const char b64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+	char *out = malloc(n / 3 * 4 + 16);
+	int fd, o = 0;
+
+	if (!out)
+		return;
+	for (int i = 0; i < n; i += 3) {
+		unsigned v = (unsigned char)s[i] << 16;
+		if (i + 1 < n)
+			v |= (unsigned char)s[i + 1] << 8;
+		if (i + 2 < n)
+			v |= (unsigned char)s[i + 2];
+		out[o++] = b64[v >> 18 & 63];
+		out[o++] = b64[v >> 12 & 63];
+		out[o++] = i + 1 < n ? b64[v >> 6 & 63] : '=';
+		out[o++] = i + 2 < n ? b64[v & 63] : '=';
+	}
+	fd = open("/dev/ttyW0", O_WRONLY | O_NOCTTY);
+	if (fd >= 0) {
+		dprintf(fd, "\033]52;c;%.*s\a", o, out);
+		close(fd);
+	}
+	free(out);
+}
+
+static void term_copy(struct termapp *a)
+{
+	struct term *t = &a->t;
+	char *buf = malloc((size_t)(t->cols + 1) * t->rows + 1);
+	int n = 0;
+
+	if (!buf)
+		return;
+	for (int y = 0; y < t->rows; y++) {
+		int start = n, any = 0;
+		for (int x = 0; x < t->cols; x++) {
+			if (!term_selected(a, x, y))
+				continue;
+			any = 1;
+			buf[n++] = term_view_cell(t, x, y)->ch;
+		}
+		if (!any)
+			continue;
+		while (n > start && buf[n - 1] == ' ')
+			n--;	/* no trailing blanks */
+		buf[n++] = '\n';
+	}
+	if (n && buf[n - 1] == '\n' && a->sy0 == a->sy1)
+		n--;
+	if (n)
+		host_clipboard(buf, n);
+	free(buf);
+}
 
 static void term_draw(struct win *w)
 {
@@ -258,7 +339,7 @@ static void term_draw(struct win *w)
 			int fg = c.fg, bg = c.bg;
 			if ((c.attr & ATTR_BOLD) && fg < 8)
 				fg += 8;
-			if (c.attr & ATTR_REVERSE) {
+			if (!!(c.attr & ATTR_REVERSE) != term_selected(a, x, y)) {
 				int tmp = fg;
 				fg = bg;
 				bg = tmp;
@@ -408,11 +489,39 @@ static void term_close(struct win *w)
 static void term_mouse(struct win *w, int x, int y, int ev, int arg)
 {
 	struct termapp *a = w->priv;
+	int cx = (x - 2) / FONT_W, cy = (y - 2) / FONT_H;
 
-	if (ev == M_WHEEL && !a->t.using_alt) {
-		term_scroll_view(&a->t, arg * 3);
-		w->dirty = need_redraw = 1;
+	if (cx < 0)
+		cx = 0;
+	if (cx >= a->t.cols)
+		cx = a->t.cols - 1;
+	if (cy < 0)
+		cy = 0;
+	if (cy >= a->t.rows)
+		cy = a->t.rows - 1;
+	switch (ev) {
+	case M_WHEEL:
+		if (!a->t.using_alt)
+			term_scroll_view(&a->t, arg * 3);
+		break;
+	case M_DOWN:
+	case M_DOUBLE:
+		/* drag to select; the selection is copied to the host */
+		a->sel = 0;
+		a->sx0 = a->sx1 = cx;
+		a->sy0 = a->sy1 = cy;
+		break;
+	case M_MOVE:
+		a->sel = 1;
+		a->sx1 = cx;
+		a->sy1 = cy;
+		break;
+	case M_UP:
+		if (a->sel)
+			term_copy(a);
+		break;
 	}
+	w->dirty = need_redraw = 1;
 }
 
 static const struct app_ops term_ops = {
@@ -1307,13 +1416,18 @@ static void click(int x, int y)
 		drag.resize = 1;
 		break;
 	default:
-		if (w->ops->mouse)
+		if (w->ops->mouse) {
+			mouse_capture = w;
 			w->ops->mouse(w, x - w->x, y - w->y, dbl ? M_DOUBLE : M_DOWN, 1);
+		}
 	}
 }
 
 static void pointer_moved(void)
 {
+	if (mouse_capture && (buttons & 1))
+		mouse_capture->ops->mouse(mouse_capture, mx - mouse_capture->x,
+					  my - mouse_capture->y, M_MOVE, 0);
 	if (drag.w) {
 		struct win *w = drag.w;
 		if (drag.resize) {
@@ -1340,10 +1454,16 @@ static void handle_event(const struct input_event *ev)
 	case EV_KEY:
 		if (ev->code == BTN_LEFT) {
 			buttons = ev->value ? buttons | 1 : buttons & ~1;
-			if (ev->value)
+			if (ev->value) {
 				click(mx, my);
-			else
+			} else {
 				drag.w = NULL;
+				if (mouse_capture) {
+					struct win *c = mouse_capture;
+					mouse_capture = NULL;
+					c->ops->mouse(c, mx - c->x, my - c->y, M_UP, 0);
+				}
+			}
 		} else if (ev->code < BTN_MISC || ev->code >= KEY_OK) {
 			handle_key(ev->code, ev->value);
 		}

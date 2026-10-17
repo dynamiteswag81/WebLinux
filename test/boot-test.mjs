@@ -79,6 +79,26 @@ try {
     } else if (input && input.paste !== undefined) {
       // what a Ctrl+Shift+V paste on the canvas does
       await page.evaluate((t) => self.wlscreen.typeText(t), input.paste.replaceAll('@PORT@', String(PORT)));
+    } else if (input && input.drag) {
+      // press at the first point, move to the second, release
+      const geo = await page.evaluate(() => {
+        const c = document.getElementById('screen'), r = c.getBoundingClientRect();
+        return { l: r.left, t: r.top, w: r.width, h: r.height, cw: c.width, ch: c.height };
+      });
+      const sc = Math.min(geo.w / geo.cw, geo.h / geo.ch);
+      const P = ([x, y]) => [geo.l + (geo.w - geo.cw * sc) / 2 + x * sc, geo.t + (geo.h - geo.ch * sc) / 2 + y * sc];
+      const [a, b] = input.drag.map(P);
+      await page.mouse.move(...a);
+      await page.mouse.down();
+      await page.mouse.move(...b, { steps: 8 });
+      await page.mouse.up();
+    } else if (input && input.copied !== undefined) {
+      // wait until the guest copied this text to the host clipboard
+      const t0 = Date.now();
+      while ((await page.evaluate(() => self.lastCopied || '')) !== input.copied) {
+        if (Date.now() - t0 > TIMEOUT) throw new Error('clipboard: ' + JSON.stringify(await page.evaluate(() => self.lastCopied)));
+        await new Promise((r) => setTimeout(r, 100));
+      }
     } else if (input && input.button) {
       // a button of the page; it may reload the page
       const nav = page.waitForNavigation({ timeout: TIMEOUT }).catch(() => null);

@@ -1,0 +1,2 @@
+[[null, "weblinux:/# "], [{"sleep": 5000}, ""], [{"paste": "clear; echo copy-me-please\n"}, ""], [{"sleep": 2000}, ""],
+ [{"drag": [[113, 50], [235, 50]]}, ""], [{"copied": "copy-me-please"}, ""]]
