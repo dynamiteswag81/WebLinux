@@ -14,10 +14,12 @@
 // accepted; a reload it causes restarts the output); {"press": "Control+c"}
 // (or a list) presses keys on the canvas.  --shot saves a
 // screenshot of the canvas at the end.  @PORT@ in an input becomes the
-// page server's port (reachable from the guest as 10.0.2.2).  The default checks that
+// page server's port (reachable from the guest as 10.0.2.2); names under
+// .test resolve to 10.0.2.2 (a fake DNS server behind the relay).  The default checks that
 // bash comes up and runs a pipeline.
 
 import { spawn } from 'child_process';
+import dgram from 'dgram';
 import fs from 'fs';
 import path from 'path';
 import { createRequire } from 'module';
@@ -38,8 +40,27 @@ const steps = args[0] ? JSON.parse(fs.readFileSync(args[0], 'utf8')) : [
 const TIMEOUT = Number(process.env.STEP_TIMEOUT || 60) * 1000;
 const PORT = 8000 + Math.floor(Math.random() * 900);
 
+// a tiny DNS server for the guest (through the relay): *.test -> 10.0.2.2
+const dns = dgram.createSocket('udp4');
+dns.on('message', (q, from) => {
+  let i = 12, name = [];
+  while (q[i]) { name.push(q.toString('latin1', i + 1, i + 1 + q[i])); i += q[i] + 1; }
+  const qend = i + 5, type = q.readUInt16BE(i + 1);
+  const ok = name.at(-1) === 'test';
+  const r = Buffer.alloc(qend + (ok && type === 1 ? 16 : 0));
+  q.copy(r, 0, 0, qend);
+  r.writeUInt16BE(0x8180 | (ok ? 0 : 3), 2); // response, RD+RA, NOERROR/NXDOMAIN
+  r.writeUInt16BE(0, 6); r.writeUInt16BE(0, 8); r.writeUInt16BE(0, 10);
+  if (ok && type === 1) {
+    r.writeUInt16BE(1, 6);
+    Buffer.from([0xc0, 12, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 10, 0, 2, 2]).copy(r, qend);
+  }
+  dns.send(r, from.port, from.address);
+});
+await new Promise((r) => dns.bind(0, '127.0.0.1', r));
+
 const server = spawn(process.execPath, [path.join(ROOT, 'server.js'), String(PORT)],
-  { stdio: 'ignore' });
+  { stdio: 'ignore', env: { ...process.env, WEBLINUX_DNS: `127.0.0.1:${dns.address().port}` } });
 let out = '';
 let ok = false;
 const browser = await chromium.launch({ args: ['--autoplay-policy=no-user-gesture-required'] });
@@ -138,5 +159,6 @@ try {
   if (logFile) fs.writeFileSync(logFile, out);
   await browser.close();
   server.kill();
+  dns.close();
 }
 process.exit(ok ? 0 : 1);

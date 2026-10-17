@@ -21,6 +21,8 @@ const net = require('net');
 const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
 function dnsServer() {
+  // WEBLINUX_DNS=ip[:port] picks the resolver (tests use a local one)
+  if (process.env.WEBLINUX_DNS) return process.env.WEBLINUX_DNS;
   try {
     const m = fs.readFileSync('/etc/resolv.conf', 'utf8').match(/^\s*nameserver\s+([0-9.]+)/m);
     if (m) return m[1];
@@ -86,7 +88,12 @@ function attach(server) {
     let host = url.searchParams.get('host') || '';
     const port = Number(url.searchParams.get('port'));
     if (!(port > 0 && port < 65536) || (proto !== 'tcp' && proto !== 'udp')) { sock.destroy(); return; }
-    if (host === 'dns') host = dnsServer();
+    let port2 = port;
+    if (host === 'dns') {
+      const d = dnsServer().split(':');
+      host = d[0];
+      if (d[1]) port2 = Number(d[1]);
+    }
 
     const accept = () => {
       sock.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n'
@@ -118,7 +125,7 @@ function attach(server) {
       const u = dgram.createSocket(net.isIPv6(host) ? 'udp6' : 'udp4');
       let timer;
       const idle = () => { clearTimeout(timer); timer = setTimeout(() => ws.close(), 120000); };
-      const ws = websocket(sock, (m) => { idle(); u.send(m, port, host); }, () => { clearTimeout(timer); u.close(); });
+      const ws = websocket(sock, (m) => { idle(); u.send(m, port2, host); }, () => { clearTimeout(timer); u.close(); });
       u.on('message', (m) => { idle(); ws.send(m); });
       u.on('error', () => ws.close());
       idle();
